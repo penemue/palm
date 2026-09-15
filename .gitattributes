@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.jar binary
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# The corpus is measured byte by byte, so no file in it may be touched by EOL conversion.
+src/test/resources/corpus/** -text
+src/test/resources/corpus/**/README.md text eol=lf

@@ -1,0 +1,3 @@
+com.github.penemue.palm.lz77.GreedyRangeCompressionProvider
+com.github.penemue.palm.lz77.LazyRangeCompressionProvider
+com.github.penemue.palm.palmist.RangePalmistCompressionProvider
