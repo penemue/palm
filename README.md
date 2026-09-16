@@ -9,7 +9,7 @@ A lossless compression library in Kotlin. It has two families:
 [LZ77](https://en.wikipedia.org/wiki/LZ77_and_LZ78), with a choice of parser (greedy or one-byte
 lazy), and palmist, an adaptive next-byte context predictor.
 
-## Palmist
+## 🖖 Palmist
 
 Palmist has no back-references: every byte is coded as a literal, against the predictions of several
 orders. When every prediction is wrong, the byte is coded through an inverted LZMA matched-literal
