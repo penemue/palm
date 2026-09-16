@@ -28,7 +28,7 @@ repositories {
     maven(url = "https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.penemue:palm:main-SNAPSHOT")
+    implementation("com.github.penemue:palm:0.1.0")
 }
 ```
 ```xml
@@ -42,7 +42,7 @@ dependencies {
 <dependency>
     <groupId>com.github.penemue</groupId>
     <artifactId>palm</artifactId>
-    <version>main-SNAPSHOT</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
