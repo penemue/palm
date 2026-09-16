@@ -107,7 +107,7 @@ publishing {
             from(components["java"])
             pom {
                 name = "Palm"
-                description = "A toolkit for building lossless compression methods in Kotlin from interchangeable parts"
+                description = "A lossless compression library in Kotlin"
                 url = "https://github.com/penemue/palm"
                 packaging = "jar"
                 scm {

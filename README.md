@@ -5,9 +5,9 @@
 [![Apache License 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
 [![Pure Kotlin](https://img.shields.io/badge/100%25-kotlin-orange.svg)](https://kotlinlang.org)
 
-A toolkit for building lossless compression methods in Kotlin from interchangeable parts. It has two
-families: [LZ77](https://en.wikipedia.org/wiki/LZ77_and_LZ78), with a pluggable choice of parser
-(greedy or one-byte lazy), and palmist, an adaptive next-byte context predictor.
+A lossless compression library in Kotlin. It has two families:
+[LZ77](https://en.wikipedia.org/wiki/LZ77_and_LZ78), with a choice of parser (greedy or one-byte
+lazy), and palmist, an adaptive next-byte context predictor.
 
 ## Palmist
 
