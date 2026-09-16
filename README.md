@@ -1,6 +1,7 @@
 # 🌴 Palm
 
 [![Build](https://github.com/penemue/palm/actions/workflows/build.yml/badge.svg)](https://github.com/penemue/palm/actions/workflows/build.yml)
+[![JitPack](https://jitpack.io/v/penemue/palm.svg)](https://jitpack.io/#penemue/palm)
 [![Apache License 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
 [![Pure Kotlin](https://img.shields.io/badge/100%25-kotlin-orange.svg)](https://kotlinlang.org)
 
@@ -15,6 +16,35 @@ orders. When every prediction is wrong, the byte is coded through an inverted LZ
 walk: LZMA keys its trees on a value the byte may equal, palmist keys them on the wrong predictions,
 which the byte is known to differ from. Each bit goes through a tree keyed by the next bit of the
 leading prediction still consistent with the prefix coded so far.
+
+## Install
+
+Any tag, branch, or commit of this repository is consumable as a Maven artifact via
+[JitPack](https://jitpack.io/#penemue/palm); a branch is requested as `main-SNAPSHOT`.
+
+```kotlin
+// in Gradle project (Kotlin DSL)
+repositories {
+    maven(url = "https://jitpack.io")
+}
+dependencies {
+    implementation("com.github.penemue:palm:main-SNAPSHOT")
+}
+```
+```xml
+<!-- in Maven project -->
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+<dependency>
+    <groupId>com.github.penemue</groupId>
+    <artifactId>palm</artifactId>
+    <version>main-SNAPSHOT</version>
+</dependency>
+```
 
 ## Usage
 
