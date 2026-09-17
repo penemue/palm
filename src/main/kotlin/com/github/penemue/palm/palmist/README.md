@@ -1,6 +1,6 @@
 # `com.github.penemue.palm.palmist`
 
-An adaptive **next-byte prediction** compressor. Predictors of order 1 upwards each propose the byte
+An adaptive **next-byte prediction** compressor. Predictors of order 2 upwards each propose the byte
 they expect next, and a byte one of them got right costs a fraction of a bit. A literal has neither a
 length nor a distance — there are no back-references at all. The package plugs into the project's
 `CompressionProvider` SPI as the `palmist` service.
@@ -33,12 +33,15 @@ they hold identical state at every position.
 
 ## Prediction
 
-Each order keeps its own table of predicted bytes, addressed by that many preceding bytes. Orders 1
-and 2 index their table directly, in 256 and 65536 slots; every deeper order is wider than its table,
-so it folds the context through a Fibonacci hash and distinct contexts share slots. Each hashed table
-is twice the size of the one above it, so the tables grow by one bit per order while the context they
-key on grows by a whole byte. The deepest order supported reads the whole 8-byte history a `Long`
-holds.
+Each order keeps its own table of predicted bytes, addressed by that many preceding bytes. Order 2 is
+the shallowest one and indexes its table directly, in 65536 slots; every deeper order is wider than
+its table, so it folds the context through a Fibonacci hash and distinct contexts share slots. Each
+hashed table is twice the size of the one above it, so the tables grow by one bit per order while the
+context they key on grows by a whole byte. The deepest order supported reads the whole 8-byte history
+a `Long` holds.
+
+Order 1 is deliberately absent: it was measured to spend more on the chain step it adds to every
+literal than its predictions return.
 
 A slot is not overwritten by every byte that contradicts it. Each one carries a *confidence*, raised
 whenever its prediction is right and spent to keep that prediction in place: a contradicting byte is
@@ -112,6 +115,7 @@ shipped width is a memory budget rather than a measured minimum.
 `orderCount` does have an interior optimum. The orders fail in different places — a deep order
 starves on data where a shallow one is confident, and the reverse on data with long exact context —
 so an added order pays for itself as long as it predicts where the others miss. Past the optimum the
-chain step it adds to every literal costs more than the order returns.
+chain step it adds to every literal costs more than the order returns. The same trade sets where the
+ensemble starts, which is why it starts at order 2 rather than at order 1.
 
 See `BENCHMARK_RESULTS.md` for the sizes this format reaches.

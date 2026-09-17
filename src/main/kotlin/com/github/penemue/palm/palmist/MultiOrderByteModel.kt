@@ -20,10 +20,10 @@ import com.github.penemue.palm.util.fibonacciHash
 import com.github.penemue.palm.util.unsignedInt
 
 /**
- * Independent next-byte predictors of order 1 upwards, presented as one list.
+ * Independent next-byte predictors of order [BASE_ORDER] upwards, presented as one list.
  *
- * Each order keeps its own table of predicted bytes, addressed by that many preceding bytes: orders 1
- * and 2 index their table directly, every deeper one folds its context through a Fibonacci
+ * Each order keeps its own table of predicted bytes, addressed by that many preceding bytes: the
+ * shallowest one indexes its table directly, every deeper one folds its context through a Fibonacci
  * (multiplicative) hash and so shares slots between distinct contexts, in a table twice the size of
  * the order above it, since its context is that much wider. Every slot carries a confidence
  * raised by each byte its prediction gets right and spent to keep that prediction in place, so a
@@ -149,7 +149,7 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
     private fun slotOf(order: Int): Int {
         val context = history and contextMasks[order]
         return when (order) {
-            DIRECT_ORDER_1, DIRECT_ORDER_2 -> context.toInt()
+            DIRECT_ORDER -> context.toInt()
             else -> context.fibonacciHash(slotBits[order])
         }
     }
@@ -157,21 +157,21 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
     private companion object {
 
         /**
-         * Base-2 logarithm of the slot count of the table order [order] (zero-based) owns: the two
-         * shallowest orders index theirs by the whole context, every deeper one hashes into a table
+         * Base-2 logarithm of the slot count of the table order [order] (zero-based) owns: the
+         * shallowest order indexes its by the whole context, every deeper one hashes into a table
          * far smaller than its context and twice the size of the one above it.
          */
         fun slotBitsOf(order: Int) = when (order) {
-            DIRECT_ORDER_1 -> ORDER_1_SLOT_BITS
-            DIRECT_ORDER_2 -> ORDER_2_SLOT_BITS
+            DIRECT_ORDER -> DIRECT_ORDER_SLOT_BITS
             else -> FIRST_HASHED_SLOT_BITS + (order - FIRST_HASHED_ORDER)
         }
 
         /**
-         * Mask keeping the bytes order [order] (zero-based) is keyed by, one more than its index.
+         * Mask keeping the bytes order [order] (zero-based) is keyed by, [BASE_ORDER] more than its
+         * index.
          */
         fun contextMaskOf(order: Int): Long {
-            val bits = (order + 1) * Byte.SIZE_BITS
+            val bits = (order + BASE_ORDER) * Byte.SIZE_BITS
             // A context exactly as wide as a Long needs no masking.
             return if (bits == Long.SIZE_BITS) -1L else (1L shl bits) - 1
         }
@@ -260,31 +260,28 @@ private const val CONFIDENCE_BITS = Byte.SIZE_BITS / CONFIDENCE_SLOTS_PER_BYTE
 private const val CONFIDENCE_MASK = (1 shl CONFIDENCE_BITS) - 1
 
 /**
- * Zero-based index of order 1, whose table is indexed by the previous byte itself.
+ * Order of the shallowest predictor, so an ensemble of `n` orders spans [BASE_ORDER] through
+ * `BASE_ORDER + n - 1`. Shallower orders were measured to cost more in chain steps than their
+ * predictions return.
  */
-private const val DIRECT_ORDER_1 = 0
+internal const val BASE_ORDER = 2
 
 /**
- * Zero-based index of order 2, whose table is indexed by the previous two bytes themselves.
+ * Zero-based index of the shallowest order, whose table is indexed by its whole context.
  */
-private const val DIRECT_ORDER_2 = 1
+private const val DIRECT_ORDER = 0
 
 /**
- * As wide as the one byte keying [DIRECT_ORDER_1], so its table owns a slot per context.
+ * As wide as the [BASE_ORDER] bytes keying [DIRECT_ORDER], so its table owns a slot per context.
  */
-private const val ORDER_1_SLOT_BITS = 8
+private const val DIRECT_ORDER_SLOT_BITS = BASE_ORDER * Byte.SIZE_BITS
 
 /**
- * As wide as the two bytes keying [DIRECT_ORDER_2], so its table owns a slot per context.
+ * Zero-based index of the shallowest order whose context is wider than its table.
  */
-private const val ORDER_2_SLOT_BITS = 16
-
-/**
- * Zero-based index of order 3, the shallowest order whose context is wider than its table.
- */
-private const val FIRST_HASHED_ORDER = DIRECT_ORDER_2 + 1
+private const val FIRST_HASHED_ORDER = DIRECT_ORDER + 1
 
 /**
  * Base-2 logarithm of the slot count of the shallowest hashed table.
  */
-private const val FIRST_HASHED_SLOT_BITS = ORDER_2_SLOT_BITS + 1
+private const val FIRST_HASHED_SLOT_BITS = DIRECT_ORDER_SLOT_BITS + 1
