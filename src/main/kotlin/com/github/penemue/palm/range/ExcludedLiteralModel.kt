@@ -164,7 +164,8 @@ private fun narrow(excluded: IntArray, live: Int, bitIndex: Int, bit: Int): Int 
     var result = 0
     while (remaining != 0) {
         val index = remaining.countTrailingZeroBits()
-        if (((excluded[index] ushr bitIndex) and 1) == bit) result = result or (1 shl index)
+        val agrees = ((excluded[index] ushr bitIndex) xor bit xor 1) and 1
+        result = result or (agrees shl index)
         remaining = remaining and (remaining - 1)
     }
     return result
