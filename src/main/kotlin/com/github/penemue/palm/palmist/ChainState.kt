@@ -97,7 +97,7 @@ internal class ChainState(
 /**
  * Default [PalmistFormat.exhaustedHistoryStates].
  */
-internal const val EXHAUSTED_HISTORY_STATES = 4
+internal const val EXHAUSTED_HISTORY_STATES = 16
 
 /**
  * Default [PalmistFormat.runBuckets].

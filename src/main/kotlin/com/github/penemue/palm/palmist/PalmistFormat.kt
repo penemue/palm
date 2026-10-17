@@ -115,6 +115,11 @@ internal const val GEOMETRY_VERSION_MARKER = 0
 private const val LEGACY_BASE_ORDER = 1
 
 /**
+ * [PalmistFormat.exhaustedHistoryStates] of the legacy format: the two most recent literals.
+ */
+private const val LEGACY_EXHAUSTED_HISTORY_STATES = 4
+
+/**
  * Default [PalmistFormat.confidenceStates].
  */
 internal const val DEFAULT_CONFIDENCE_STATES = 3
@@ -147,7 +152,11 @@ private const val DEFAULT_LIVE_COUNT_BUCKETS = 2
 /**
  * Parameter set of streams written before the geometry carried a version, reachable by decoding only.
  */
-internal val PALMIST_LEGACY_FORMAT = PalmistFormat(PALMIST_LEGACY_VERSION, LEGACY_BASE_ORDER)
+internal val PALMIST_LEGACY_FORMAT = PalmistFormat(
+    PALMIST_LEGACY_VERSION,
+    LEGACY_BASE_ORDER,
+    exhaustedHistoryStates = LEGACY_EXHAUSTED_HISTORY_STATES,
+)
 
 /**
  * Parameter set every stream the compressor writes is coded with.
