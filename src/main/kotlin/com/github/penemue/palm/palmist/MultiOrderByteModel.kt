@@ -107,7 +107,9 @@ internal class MultiOrderByteModel(
      * from, and rolls the predictions forward to the next position.
      */
     fun learn(byte: Int) {
-        for (i in 0 until orderCount) tables[i].learn(orderSlots[i], byte)
+        for (i in 0 until orderCount) {
+            tables[i].learn(orderSlots[i], orderPredictions[i], orderConfidences[i], byte)
+        }
         history = (history shl Byte.SIZE_BITS) or byte.toLong()
         refresh()
     }
@@ -251,21 +253,23 @@ private class GatedByteTable(
     fun confidenceAt(slot: Int): Int =
         (confidence[slot ushr confidenceSlotBits].unsignedInt ushr shiftOf(slot)) and confidenceMask
 
-    fun learn(slot: Int, byte: Int) {
-        val index = slot ushr confidenceSlotBits
-        val shift = shiftOf(slot)
-        val packed = confidence[index].unsignedInt
-        val credit = (packed ushr shift) and confidenceMask
-        if (table[slot].unsignedInt == byte) {
+    /**
+     * Teaches [slot] that [byte] followed; [predicted] and [credit] must be the slot's current
+     * [predictedByte] and [confidenceAt], which spares reading them again.
+     */
+    fun learn(slot: Int, predicted: Int, credit: Int, byte: Int) {
+        if (predicted == byte) {
             // The ceiling keeps the field below its mask, so neither step can carry into a
             // neighboring slot's field and the whole byte can be adjusted at once.
             if (credit < maxConfidence) {
-                confidence[index] = (packed + (1 shl shift)).toByte()
+                val index = slot ushr confidenceSlotBits
+                confidence[index] = (confidence[index] + (1 shl shiftOf(slot))).toByte()
             }
         } else if (credit == 0) {
             table[slot] = byte.toByte()
         } else {
-            confidence[index] = (packed - (1 shl shift)).toByte()
+            val index = slot ushr confidenceSlotBits
+            confidence[index] = (confidence[index] - (1 shl shiftOf(slot))).toByte()
         }
     }
 
