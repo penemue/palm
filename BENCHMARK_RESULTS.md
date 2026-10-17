@@ -146,8 +146,9 @@ each match as soon as it is found.
 - Corpora: the complete [Canterbury Corpus](https://corpus.canterbury.ac.nz/) and
   [Silesia Compression Corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia).
 - Each corpus member is compressed independently through its `CompressionProvider` (the public SPI),
-  so every reported size is the complete payload, **including** the framing header and the range
-  coder's final flush.
+  so every reported size is the complete payload, **including** the SPI framing header (a magic
+  number, a family byte, the VLQ-coded original size, then the geometry marker, the format version
+  and `orderCount`) and the range coder's final flush.
 - Same size/ratio (not CPU) methodology as the LZ77 section: "packed bits per byte" is
   `encodedBytes * 8 / originalBytes`; "packed ratio" is `encodedBytes / originalBytes`.
 - Date: 2026-11
@@ -156,20 +157,20 @@ The order tables, their confidence gate and the literal coding are described in
 [`palmist/README.md`](src/main/kotlin/com/github/penemue/palm/palmist/README.md).
 
 Palmist has no back-references, yet on Canterbury it beats both LZ77 providers - `lz77-lazy` by 2.11%
-and `lz77-greedy` by 3.59%. Silesia separates them the other way: palmist trails `lz77-lazy` by 2.70%
+and `lz77-greedy` by 3.58%. Silesia separates them the other way: palmist trails `lz77-lazy` by 2.70%
 and `lz77-greedy` by 0.73%.
 
 The two corpora disagree per file rather than overall. Palmist wins the text members on both -
-Canterbury's `plrabn12.txt` (163,542 against the lazy 174,694) and Silesia's `webster` (9,270,225
-against 10,275,355) - and loses the ones richest in long repeats, Canterbury's `kennedy.xls` (49,618
-against 40,367) and Silesia's `nci` (3,148,615 against 2,280,306).
+Canterbury's `plrabn12.txt` (163,544 against the lazy 174,694) and Silesia's `webster` (9,270,227
+against 10,275,355) - and loses the ones richest in long repeats, Canterbury's `kennedy.xls` (49,620
+against 40,367) and Silesia's `nci` (3,148,617 against 2,280,306).
 
 ### Corpus totals
 
 | Corpus | Encoded bytes | Packed bits/byte | Packed ratio |
 |---|---:|---:|---:|
-| Canterbury Corpus (2,810,784 bytes) | 503,497 | 1.4330 | 0.1791 |
-| Silesia Compression Corpus (211,938,580 bytes) | 58,262,453 | 2.1992 | 0.2749 |
+| Canterbury Corpus (2,810,784 bytes) | 503,519 | 1.4331 | 0.1791 |
+| Silesia Compression Corpus (211,938,580 bytes) | 58,262,477 | 2.1992 | 0.2749 |
 
 ### Per-file tables
 
@@ -177,33 +178,33 @@ against 40,367) and Silesia's `nci` (3,148,615 against 2,280,306).
 
 | File | Original bytes | Encoded bytes | Packed bits/byte | Packed ratio |
 |---|---:|---:|---:|---:|
-| alice29.txt | 152,089 | 48,232 | 2.5370 | 0.3171 |
-| asyoulik.txt | 125,179 | 42,879 | 2.7403 | 0.3425 |
-| cp.html | 24,603 | 7,862 | 2.5564 | 0.3196 |
-| fields.c | 11,150 | 3,311 | 2.3756 | 0.2970 |
-| grammar.lsp | 3,721 | 1,312 | 2.8207 | 0.3526 |
-| kennedy.xls | 1,029,744 | 49,618 | 0.3855 | 0.0482 |
-| lcet10.txt | 426,754 | 122,005 | 2.2871 | 0.2859 |
-| plrabn12.txt | 481,861 | 163,542 | 2.7152 | 0.3394 |
-| ptt5 | 513,216 | 50,023 | 0.7798 | 0.0975 |
-| sum | 38,240 | 12,880 | 2.6946 | 0.3368 |
-| xargs.1 | 4,227 | 1,833 | 3.4691 | 0.4336 |
-| **TOTAL** | **2,810,784** | **503,497** | **1.4330** | **0.1791** |
+| alice29.txt | 152,089 | 48,234 | 2.5371 | 0.3171 |
+| asyoulik.txt | 125,179 | 42,881 | 2.7405 | 0.3426 |
+| cp.html | 24,603 | 7,864 | 2.5571 | 0.3196 |
+| fields.c | 11,150 | 3,313 | 2.3770 | 0.2971 |
+| grammar.lsp | 3,721 | 1,314 | 2.8250 | 0.3531 |
+| kennedy.xls | 1,029,744 | 49,620 | 0.3855 | 0.0482 |
+| lcet10.txt | 426,754 | 122,007 | 2.2872 | 0.2859 |
+| plrabn12.txt | 481,861 | 163,544 | 2.7152 | 0.3394 |
+| ptt5 | 513,216 | 50,025 | 0.7798 | 0.0975 |
+| sum | 38,240 | 12,882 | 2.6950 | 0.3369 |
+| xargs.1 | 4,227 | 1,835 | 3.4729 | 0.4341 |
+| **TOTAL** | **2,810,784** | **503,519** | **1.4331** | **0.1791** |
 
 **Silesia**
 
 | File | Original bytes | Encoded bytes | Packed bits/byte | Packed ratio |
 |---|---:|---:|---:|---:|
-| dickens | 10,192,446 | 3,051,820 | 2.3954 | 0.2994 |
-| mozilla | 51,220,480 | 17,934,932 | 2.8012 | 0.3502 |
-| mr | 9,970,564 | 2,601,694 | 2.0875 | 0.2609 |
-| nci | 33,553,445 | 3,148,615 | 0.7507 | 0.0938 |
-| ooffice | 6,152,192 | 2,880,367 | 3.7455 | 0.4682 |
-| osdb | 10,085,684 | 2,973,916 | 2.3589 | 0.2949 |
-| reymont | 6,627,202 | 1,455,057 | 1.7565 | 0.2196 |
-| samba | 21,606,400 | 4,729,755 | 1.7512 | 0.2189 |
-| sao | 7,251,944 | 5,043,454 | 5.5637 | 0.6955 |
-| webster | 41,458,703 | 9,270,225 | 1.7888 | 0.2236 |
-| xml | 5,345,280 | 745,244 | 1.1154 | 0.1394 |
-| x-ray | 8,474,240 | 4,427,374 | 4.1796 | 0.5225 |
-| **TOTAL** | **211,938,580** | **58,262,453** | **2.1992** | **0.2749** |
+| dickens | 10,192,446 | 3,051,822 | 2.3954 | 0.2994 |
+| mozilla | 51,220,480 | 17,934,934 | 2.8012 | 0.3502 |
+| mr | 9,970,564 | 2,601,696 | 2.0875 | 0.2609 |
+| nci | 33,553,445 | 3,148,617 | 0.7507 | 0.0938 |
+| ooffice | 6,152,192 | 2,880,369 | 3.7455 | 0.4682 |
+| osdb | 10,085,684 | 2,973,918 | 2.3589 | 0.2949 |
+| reymont | 6,627,202 | 1,455,059 | 1.7565 | 0.2196 |
+| samba | 21,606,400 | 4,729,757 | 1.7512 | 0.2189 |
+| sao | 7,251,944 | 5,043,456 | 5.5637 | 0.6955 |
+| webster | 41,458,703 | 9,270,227 | 1.7888 | 0.2236 |
+| xml | 5,345,280 | 745,246 | 1.1154 | 0.1394 |
+| x-ray | 8,474,240 | 4,427,376 | 4.1796 | 0.5225 |
+| **TOTAL** | **211,938,580** | **58,262,477** | **2.1992** | **0.2749** |

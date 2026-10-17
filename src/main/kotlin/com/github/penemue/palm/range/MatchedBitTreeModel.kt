@@ -37,13 +37,22 @@ const val MAX_MATCHED_BIT_COUNT = Int.SIZE_BITS - 3
  * @param contexts number of independent contexts the caller indexes this model by.
  * @property bitCount width of a coded value, which is also the depth of each tree, in
  * `1..`[MAX_MATCHED_BIT_COUNT].
- * @param adaptShift adaptation rate, in `MIN_PROBABILITY_ADAPT_SHIFT..MAX_PROBABILITY_ADAPT_SHIFT`.
+ * @param adaptShift adaptation rate, from the warm-up rate of [format] up to one shift below its
+ * probability bits.
+ * @param format probability precision used by the model.
  */
 class MatchedBitTreeModel(
     contexts: Int,
     internal val bitCount: Int,
-    adaptShift: Int = DEFAULT_PROBABILITY_ADAPT_SHIFT,
+    adaptShift: Int,
+    format: RangeFormat,
 ) {
+
+    /**
+     * A model on the default [RangeFormat].
+     */
+    constructor(contexts: Int, bitCount: Int, adaptShift: Int = DEFAULT_PROBABILITY_ADAPT_SHIFT) :
+        this(contexts, bitCount, adaptShift, DEFAULT_RANGE_FORMAT)
     init {
         require(bitCount in 1..MAX_MATCHED_BIT_COUNT) {
             "bitCount must be in 1..$MAX_MATCHED_BIT_COUNT but was $bitCount"
@@ -63,17 +72,19 @@ class MatchedBitTreeModel(
     internal val treeSize = 1 shl bitCount
 
     /**
-     * The probabilities of every tree of every context, in one bank: a coder addresses a node by
-     * the context, the tree within it and the path taken so far.
+     * The probabilities of every tree of every context, in one [BitModel]: a coder addresses a node
+     * by the context, the tree within it and the path taken so far.
      */
-    internal val model = BitModel(contexts * TREES_PER_CONTEXT * treeSize, adaptShift)
+    internal val model = BitModel(contexts * TREES_PER_CONTEXT * treeSize, adaptShift, format)
 }
 
 /**
- * Codes the low [MatchedBitTreeModel.bitCount] bits of [value] through [model]'s [context], using
- * [predicted] as a prior. The paired [decodeMatchedBitTree] inverts it exactly.
+ * Codes [value] through [model]'s [context], using [predicted] as a prior. The paired
+ * [decodeMatchedBitTree] inverts it exactly.
  *
+ * @param model the model whose [MatchedBitTreeModel.bitCount] fixes the coded width.
  * @param context which of the model's contexts this value is coded in.
+ * @param value the value to code; only its low [MatchedBitTreeModel.bitCount] bits are read.
  * @param predicted the value expected here, read as the same width as [value].
  */
 fun RangeEncoder.encodeMatchedBitTree(model: MatchedBitTreeModel, context: Int, value: Int, predicted: Int) {
@@ -100,6 +111,8 @@ fun RangeEncoder.encodeMatchedBitTree(model: MatchedBitTreeModel, context: Int, 
  * Decodes one value from [model]'s [context], using [predicted] as a prior, the exact inverse of
  * [encodeMatchedBitTree].
  *
+ * @param model the model the value was coded through; its [MatchedBitTreeModel.bitCount] fixes the
+ * decoded width.
  * @param context which of the model's contexts this value was coded in.
  * @param predicted the value expected here, read as [MatchedBitTreeModel.bitCount] bits.
  * @return the decoded value, right-aligned.

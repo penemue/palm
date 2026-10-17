@@ -16,6 +16,7 @@
 package com.github.penemue.palm.palmist
 
 import com.github.penemue.palm.range.BitModel
+
 import com.github.penemue.palm.range.RangeDecoder
 import com.github.penemue.palm.range.decodeExcludedLiteral
 import com.github.penemue.palm.range.excludedLiteralModel
@@ -26,17 +27,39 @@ import java.io.InputStream
  * [MultiOrderByteModel] offers and, when the chain runs out, reads the byte itself.
  *
  * The prediction model, the model layouts, the contexts and the adaptation match the consumer exactly,
- * so all three models stay in lock-step without anything about them travelling on the wire.
+ * so all three models stay in lock-step without anything about them traveling on the wire.
  *
- * @param config geometry of the prediction model; must match the one the consumer used.
- * @param input source of the range-coded stream produced by the paired consumer.
+ * @param orderCount prediction orders recorded in the stream geometry, in
+ * [MIN_ORDER_COUNT]`..`[PalmistFormat.maxDecodableOrderCount] of [format].
+ * @param input source of the range-coded stream; the reader does not close it.
+ * @param format parameter set that defines the model layout and range coder for the stream.
  */
-internal class RangePalmistTokenReader(config: PalmistConfig, input: InputStream) : PalmistTokenReader {
-    private val decoder = RangeDecoder(input)
-    private val model = MultiOrderByteModel(config.orderCount)
-    private val state = ChainState(config.orderCount)
-    private val chainModel = BitModel(state.chainModelSize)
-    private val escapeModel = excludedLiteralModel(ESCAPE_CONTEXTS, ESCAPE_MODEL_ADAPT_SHIFT)
+internal class RangePalmistTokenReader(
+    orderCount: Int,
+    input: InputStream,
+    private val format: PalmistFormat = PALMIST_CURRENT_FORMAT,
+) : PalmistTokenReader {
+    private val decoder = RangeDecoder(input, format.range)
+    private val model = MultiOrderByteModel(
+        orderCount,
+        format.baseOrder,
+        format.confidenceSlotBits,
+        format.maxConfidence,
+        format.shallowSlotBits,
+    )
+    private val state = ChainState(
+        orderCount,
+        format.confidenceStates,
+        format.exhaustedHistoryStates,
+        format.runBuckets,
+    )
+    private val chainModel = BitModel(state.chainModelSize, format.chainModelAdaptShift, format.range)
+    private val escapeModel = excludedLiteralModel(
+        ESCAPE_CONTEXTS,
+        format.escapeModelAdaptShift,
+        format.liveCountBuckets,
+        format.range,
+    )
 
     override fun readLiteral(): Int {
         val count = model.count
@@ -53,7 +76,13 @@ internal class RangePalmistTokenReader(config: PalmistConfig, input: InputStream
         }
         val exhausted = value < 0
         if (exhausted) {
-            value = decoder.decodeExcludedLiteral(escapeModel, state.previousLiteral, predictions, count)
+            value = decoder.decodeExcludedLiteral(
+                escapeModel,
+                state.previousLiteral,
+                predictions,
+                count,
+                format.liveCountBuckets,
+            )
         }
         state.advance(value, exhausted)
         model.learn(value)

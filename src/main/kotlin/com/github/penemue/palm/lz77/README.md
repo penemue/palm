@@ -13,6 +13,7 @@ Compression is split into three concerns — **find matches**, **choose which ma
 | Type | Role |
 |---|---|
 | [`Lz77Config`](Lz77Config.kt) | Immutable geometry: `windowBits`, `lengthBits`, `minMatch`, `maxChain`, `repDistanceCount` (defaults `20 / 8 / 5 / 64 / 8`), each capped by its own `MAX_*` limit, `minMatch` additionally floored at `HASH_LENGTH`. |
+| [`Lz77Format`](Lz77Format.kt) | Parameter set of one stream format version: range precision and warm-up, distance align bits, short-length width, run buckets, previous-length groups and adapt shifts. Only the version travels in the payload. |
 | [`Lz77Dictionary`](Lz77Dictionary.kt) | Hash-chained cyclic window that finds the longest match at a position, keyed by the leading `HASH_LENGTH = 5` bytes; its window carries a mirrored tail so a wrapping run compares as a flat range. |
 | [`Lz77Encoders`](Lz77Encoders.kt) | `ByteArray.lz77GreedyEncode` and `lz77LazyEncode` (one-byte lazy) parsers. |
 | [`Lz77TokenConsumer`](Lz77TokenConsumer.kt) | Sink the parser emits into: `literal`, `match`, `finish`. |
@@ -57,12 +58,11 @@ the distance out. Flag and index are both coded in contexts bucketed by the matc
 match, the index as an adaptive unary chain with one probability per position, whose last position
 needs no bit at all — it is implied by the positions before it. A fresh distance is split LZMA-style
 into a slot — the significant-bit count of `distance - 1`, coded through a bit tree — and the
-mantissa below the leading one, whose high bits are equiprobable and whose lowest
-`DISTANCE_ALIGN_BITS` bits are modeled adaptively per position. Every field names its own
-adaptation rate: `REP_MODEL_ADAPT_SHIFT` for the rep flag and index,
-`DISTANCE_SLOT_MODEL_ADAPT_SHIFT` for the slot tree, `DISTANCE_ALIGN_MODEL_ADAPT_SHIFT` for the
-align bits, and one constant each for the selector, the literal and the length. Nothing about the
-rep list travels on the wire.
+mantissa below the leading one, whose high bits are equiprobable and whose lowest bits, as many as
+the format's align width, are modeled adaptively per position. Every field has its own adaptation
+rate, set by the format: one for the rep flag and index, one each for the slot tree and the align
+bits, and one each for the selector, the literal and the length. Nothing about the rep list travels
+on the wire.
 
 An operation runs on exactly one `RepDistances`, created by `Lz77CompressionMethod` and handed to
 the token consumer or reader. Those only *query* it; the loop driving them — the parser while
@@ -74,22 +74,26 @@ all.
 The **literal** field is conditioned on the previous *output* byte, so a literal following a match is
 coded against the byte that match ended on rather than a stale one. A 256-byte table indexed by that
 same byte holds the byte that last followed it; that *prediction* selects a matched sub-tree instead
-of being named on the wire, and only literals teach the table.
+of being transmitted, and only literals teach the table.
 
-The **length** field codes `length - minMatch`: its `2^min(SHORT_LENGTH_BITS, lengthBits)` lowest
-values form a short range coded through a shallow bit tree, the rest a long range spanning
-`lengthBits`, with a range flag between them. The flag and the short tree are contextualized by the
-previous match's length group (`LENGTH_PREV_GROUPS` of them, a logarithmic scale widening as lengths
-grow) as well as by the after-literal/after-match distinction the long tree uses alone.
-`Lz77Config.maxMatch` covers both ranges, so every length the format can name is a length the
-dictionary may report.
+The **length** field codes `length - minMatch`: its lowest values, as many as the format's short
+width and the geometry's `lengthBits` jointly allow, form a short range coded through a shallow bit
+tree, the rest a long range spanning `lengthBits`, with a range flag between them. The flag and the
+short tree are contextualized by the previous match's length group (a logarithmic scale widening as
+lengths grow) as well as by the after-literal/after-match distinction the long tree uses alone.
+`Lz77Config.maxMatch` is derived from the format's two ranges, so every length the format can code is
+a length the dictionary may report and no other; a consumer handed a geometry reaching past its own
+alphabet refuses it instead of truncating the excess.
 
 ## Framing and invariants
 
 Payloads start with the **common header** written by `CompressionMethod` (`PALM` magic, a family
 byte, and the original size as a VLQ). The LZ77 **body** then adds its own sub-header — the
 `Lz77Config` geometry (`windowBits`, `lengthBits`, `minMatch`, `repDistanceCount`, each a VLQ) —
-followed by the coded token stream. Key rules:
+followed by the coded token stream. A body coded with any parameter set other than the 0.1.0 one
+opens with marker `0` and its format version before the geometry; a body without the marker uses
+the 0.1.0 set. The shipped parameter set is still the 0.1.0 one, so bodies are written without the
+marker and a 0.1.0 decoder reads them. Key rules:
 
 - The original size, not a terminator, ends decoding — the coder's trailing flush bytes are ignored.
 - The geometry a payload carries is self-describing: `compress` accepts an optional `Lz77Config`
@@ -118,9 +122,11 @@ method.decompress(input, output)                     // geometry is read back fr
 
 ## Tuning
 
-The format's knobs (`DISTANCE_ALIGN_BITS`, `SELECTOR_RUN_BUCKETS`, `REP_RUN_BUCKETS`,
-`REP_INDEX_RUN_BUCKETS`, `SHORT_LENGTH_BITS`, `LENGTH_PREV_GROUPS`, the adapt shifts) are top-level
-constants in `RangeLz77TokenConsumer.kt`, read by the reader as well.
+The token models' knobs (distance align bits, short-length width, selector and rep run buckets,
+previous-length groups, the adapt shifts) are fields of `Lz77Format`, read by the consumer and the
+reader alike. The top-level constants in `RangeLz77TokenConsumer.kt` (`DISTANCE_ALIGN_BITS`,
+`SHORT_LENGTH_BITS`, `LENGTH_PREV_GROUPS`, ...) are only their defaults. A released version keeps its
+values, so retuning a knob means a new format version rather than a changed constant.
 `BENCHMARK_RESULTS.md` holds the current numbers.
 
 `Lz77Config.maxChain` is the speed knob: it caps how many chain candidates a search inspects, and

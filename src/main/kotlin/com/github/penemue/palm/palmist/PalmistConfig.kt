@@ -18,16 +18,17 @@ package com.github.penemue.palm.palmist
 import com.github.penemue.palm.CompressionConfig
 
 /**
- * Fewest orders [PalmistConfig.orderCount] may ask for, leaving the directly indexed table and one
- * hashed one.
+ * Fewest orders [PalmistConfig.orderCount] may ask for, leaving the chain a second prediction to fall
+ * back on.
  */
 const val MIN_ORDER_COUNT = 2
 
 /**
- * Most orders [PalmistConfig.orderCount] may ask for, bounded by the `Long` holding the context: the
- * deepest order reads [Long.SIZE_BITS] bits of history.
+ * Most orders [PalmistConfig.orderCount] may ask for. Every order past the directly indexed ones
+ * doubles the memory of the hashed tables and adds a step the coding chain may have to walk. It bounds
+ * compression only: a decoder accepts any order count whose deepest order fits the history.
  */
-const val MAX_ORDER_COUNT = Long.SIZE_BITS / Byte.SIZE_BITS - (BASE_ORDER - 1)
+const val MAX_ORDER_COUNT = 7
 
 /**
  * Default [PalmistConfig.orderCount].
@@ -41,10 +42,12 @@ const val DEFAULT_ORDER_COUNT = 4
  * next, so the parameter sets how deep a context the deepest predictor reads. It also widens the token
  * stream: each extra order adds a step the coding chain may have to walk.
  *
- * @property orderCount how many orders predict in parallel, in [MIN_ORDER_COUNT]`..`[MAX_ORDER_COUNT];
- * the shallowest is order [BASE_ORDER] and order `n` is keyed by the `n` bytes preceding the position.
- * Only the shallowest order owns a table sized to its context; past it every added order doubles the
- * tables' memory.
+ * @property orderCount how many orders predict in parallel, in [MIN_ORDER_COUNT]`..`[MAX_ORDER_COUNT]
+ * and narrowed further by a format version whose shallowest order is deep enough to push the deepest
+ * one past the history; the shallowest order is the one that version sets, and an order reading `n`
+ * bytes is keyed by the `n` bytes preceding the position.
+ * Only orders narrower than three bytes own a table sized to their context; past them every added
+ * order doubles the tables' memory.
  */
 data class PalmistConfig(
     val orderCount: Int = DEFAULT_ORDER_COUNT,

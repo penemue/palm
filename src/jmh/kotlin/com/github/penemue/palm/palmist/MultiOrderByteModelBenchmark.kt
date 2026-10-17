@@ -65,7 +65,7 @@ open class MultiOrderByteModelBenchmark {
      * ensemble and [MAX_ORDER_COUNT]. Counts near [MIN_ORDER_COUNT] are left out — their invocations
      * are the shortest and came out by far the noisiest.
      */
-    @Param("5", "8")
+    @Param("5", "7")
     var orderCount: Int = DEFAULT_ORDER_COUNT
 
     private lateinit var source: ByteArray
@@ -79,9 +79,10 @@ open class MultiOrderByteModelBenchmark {
      * Replays the whole file, so a score is the model's cost for that file at that order count.
      */
     @Benchmark
-
     fun replay(bh: Blackhole) {
-        val model = MultiOrderByteModel(orderCount)
+        val model = PALMIST_CURRENT_FORMAT.let {
+            MultiOrderByteModel(orderCount, it.baseOrder, it.confidenceSlotBits, it.maxConfidence, it.shallowSlotBits)
+        }
         for (byte in source) {
             val value = byte.toInt() and 0xFF
             // The coders read the prediction list before learning the byte; consuming it here keeps

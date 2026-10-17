@@ -1,6 +1,6 @@
 # `com.github.penemue.palm.palmist`
 
-An adaptive **next-byte prediction** compressor. Predictors of order 2 upwards each propose the byte
+An adaptive **next-byte prediction** compressor. Predictors of growing order each propose the byte
 they expect next, and a byte one of them got right costs a fraction of a bit. A literal has neither a
 length nor a distance — there are no back-references at all. The package plugs into the project's
 `CompressionProvider` SPI as the `palmist` service.
@@ -13,6 +13,7 @@ the `lz77` package. Prediction belongs to the coder: a token carries nothing but
 | Type | Role |
 |---|---|
 | [`PalmistConfig`](PalmistConfig.kt) | Immutable geometry: `orderCount` (`DEFAULT_ORDER_COUNT`), bounded by `MIN_ORDER_COUNT` and `MAX_ORDER_COUNT`. |
+| [`PalmistFormat`](PalmistFormat.kt) | Parameter set of one stream format version: base order, range precision and warm-up, confidence ceiling and packing, hashed-table width, chain and escape adaptation rates and buckets, and the order-count bounds for writing and reading. Only the version travels in the payload. |
 | [`MultiOrderByteModel`](MultiOrderByteModel.kt) | The order tables with their confidence gates, exposing their distinct predictions in confidence order. |
 | [`PalmistEncoder`](PalmistEncoder.kt) | `ByteArray.palmistEncode` — emits one literal per input byte. |
 | [`PalmistDecoder`](PalmistDecoder.kt) | A `PalmistTokenConsumer` that writes replayed literals out as bytes. |
@@ -33,15 +34,17 @@ they hold identical state at every position.
 
 ## Prediction
 
-Each order keeps its own table of predicted bytes, addressed by that many preceding bytes. Order 2 is
-the shallowest one and indexes its table directly, in 65536 slots; every deeper order is wider than
-its table, so it folds the context through a Fibonacci hash and distinct contexts share slots. Each
-hashed table is twice the size of the one above it, so the tables grow by one bit per order while the
-context they key on grows by a whole byte. The deepest order supported reads the whole 8-byte history
-a `Long` holds.
+Each order keeps its own table of predicted bytes, addressed by that many preceding bytes. An order
+reading at most two bytes indexes its table directly, one slot per context (65536 for order 2); every
+deeper order is wider than its table, so it folds the context through a Fibonacci hash and distinct
+contexts share slots. Each hashed table is twice the size of the one above it, so the tables grow by
+one bit per order while the context they key on grows by a whole byte. `MAX_ORDER_COUNT` caps the
+ensemble where that doubling stops paying off; the history a `Long` rolls caps it too, at
+`MAX_CONTEXT_BYTES` for the deepest order.
 
-Order 1 is deliberately absent: it was measured to spend more on the chain step it adds to every
-literal than its predictions return.
+The shallowest order is a parameter of the format version. The current format starts at order 2:
+order 1 was measured to spend more on the chain step it adds to every literal than its predictions
+return. The 0.1.0 format, which is still decoded, starts at order 1.
 
 A slot is not overwritten by every byte that contradicts it. Each one carries a *confidence*, raised
 whenever its prediction is right and spent to keep that prediction in place: a contradicting byte is
@@ -53,8 +56,9 @@ occur exactly once, so a rule that made every replacement wait for a second sigh
 those slots predicting their initial byte forever.
 
 Confidence saturates: its ceiling is how many contradicting bytes a fully confirmed prediction
-survives, and it is a compile-time constant rather than a geometry field. Fixing it lets the counter
-be packed two bits per slot, so a confidence array costs a quarter of the table beside it.
+survives. The ceiling and the packing of the counters are parameters of the format version rather
+than geometry fields, so no payload carries them. The shipped formats saturate at 2 and pack the
+counter two bits per slot, so a confidence array costs a quarter of the table beside it.
 
 The predictions are presented as one list of **distinct** bytes — a value several orders agree on
 appears once, carrying the highest confidence any of them holds for it — ordered by descending
@@ -84,13 +88,17 @@ is. Neither the predictions nor the adaptive models travel on the wire.
 ## Framing and invariants
 
 Payloads start with the **common header** written by `CompressionMethod` (`PALM` magic, family byte,
-original size as a VLQ). The palmist **body** is a geometry sub-header of one VLQ, `orderCount`,
-followed by the coded literals. Key rules:
+original size as a VLQ). The palmist **body** is a geometry sub-header containing a marker, format
+version, and one VLQ, `orderCount`, followed by the coded literals. An unversioned body is read as
+format 0, the 0.1.0 parameter set. Key rules:
 
 - The original size, not a terminator, ends decoding.
-- The geometry comes from an untrusted header, so `PalmistConfig` bounds `orderCount` before the
-  models are sized from it; each table's width is a compile-time constant, so the count alone bounds
-  what the decoder allocates.
+- The geometry comes from an untrusted header, so `orderCount` is bounded before the models are sized
+  from it, and `MultiOrderByteModel` repeats that bound for itself. A reader bounds against
+  `maxDecodableOrderCount`, the deepest ensemble the history holds, rather than the `maxOrderCount` a
+  writer obeys, so a stream written under a wider bound still decodes. The format parameter set bounds
+  each table's width and model state, so the geometry and version together bound what the decoder
+  allocates.
 - The predictions are side information both sides already hold, so naming one costs a chain bit
   rather than a byte.
 - The prediction and range models are **never stored**: the reader rebuilds them in lock-step.
@@ -116,6 +124,6 @@ shipped width is a memory budget rather than a measured minimum.
 starves on data where a shallow one is confident, and the reverse on data with long exact context —
 so an added order pays for itself as long as it predicts where the others miss. Past the optimum the
 chain step it adds to every literal costs more than the order returns. The same trade sets where the
-ensemble starts, which is why it starts at order 2 rather than at order 1.
+ensemble starts, which is why the current format starts at order 2 rather than at order 1.
 
 See `BENCHMARK_RESULTS.md` for the sizes this format reaches.

@@ -31,8 +31,12 @@ import java.io.InputStream
  * This class is **not** thread-safe and does not close [input].
  *
  * @param input source of the coded bytes produced by a [RangeEncoder].
+ * @param format probability precision and renormalization threshold used by the encoder.
  */
-class RangeDecoder(private val input: InputStream) {
+class RangeDecoder @JvmOverloads constructor(
+    private val input: InputStream,
+    private val format: RangeFormat = DEFAULT_RANGE_FORMAT,
+) {
 
     private var range = 0xFFFFFFFFL
     private var code = 0L
@@ -51,7 +55,7 @@ class RangeDecoder(private val input: InputStream) {
      * @return the decoded bit, 0 or 1.
      */
     fun decodeBit(model: BitModel, index: Int): Int {
-        val bound = (range ushr PROBABILITY_BITS) * model.probabilityOfZero(index)
+        val bound = (range ushr format.probabilityBits) * model.probabilityOfZero(index)
         val bit: Int
         // The coder invariant keeps both code and bound in 0 until 2^32, so this compares them
         // as the unsigned 32-bit quantities they are.
@@ -64,7 +68,7 @@ class RangeDecoder(private val input: InputStream) {
             bit = 1
         }
         model.adapt(index, bit)
-        while (range < RANGE_TOP) {
+        while (range < format.rangeTop) {
             range = range shl 8
             code = ((code shl 8) or readByte().toLong()) and 0xFFFFFFFFL
         }
@@ -88,7 +92,7 @@ class RangeDecoder(private val input: InputStream) {
             val bit = 1 - (difference ushr 31).toInt()
             if (bit == 1) code = difference
             result = (result shl 1) or bit
-            if (range < RANGE_TOP) {
+            if (range < format.rangeTop) {
                 range = range shl 8
                 code = ((code shl 8) or readByte().toLong()) and 0xFFFFFFFFL
             }
@@ -115,6 +119,7 @@ class RangeDecoder(private val input: InputStream) {
     }
 
     /**
+     * @return the byte read, in `0..255`.
      * @throws IOException on a premature end of stream, i.e. a truncated payload.
      */
     private fun readByte(): Int = input.read().also {

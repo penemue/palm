@@ -22,13 +22,35 @@ package com.github.penemue.palm.range
 const val MAX_EXCLUDED_COUNT = Int.SIZE_BITS - 1
 
 /**
- * Builds the bank [encodeExcludedLiteral] and [decodeExcludedLiteral] code through.
+ * Builds the model [encodeExcludedLiteral] and [decodeExcludedLiteral] code through, with the default
+ * live-count buckets on the default [RangeFormat].
  *
- * @param contexts how many independent contexts the caller indexes the bank by.
+ * @param contexts how many independent contexts the caller indexes the model by.
  * @param adaptShift adaptation rate, in `MIN_PROBABILITY_ADAPT_SHIFT..MAX_PROBABILITY_ADAPT_SHIFT`.
  */
 fun excludedLiteralModel(contexts: Int, adaptShift: Int = DEFAULT_PROBABILITY_ADAPT_SHIFT): BitModel =
-    BitModel(contexts * EXCLUDED_TREES_PER_CONTEXT * BYTE_TREE_SIZE, adaptShift)
+    excludedLiteralModel(contexts, adaptShift, LIVE_COUNT_BUCKETS, DEFAULT_RANGE_FORMAT)
+
+/**
+ * Builds the model [encodeExcludedLiteral] and [decodeExcludedLiteral] code through.
+ *
+ * @param contexts how many independent contexts the caller indexes the model by.
+ * @param adaptShift adaptation rate, from the warm-up rate of [format] up to one shift below its
+ * probability bits.
+ * @param liveCountBuckets how many buckets the live count folds into, at least
+ * [MIN_LIVE_COUNT_BUCKETS]; this builder, the encoder and the decoder must all be given the same
+ * value, since it sizes the model and addresses it alike.
+ * @param format probability precision used by the model.
+ */
+fun excludedLiteralModel(
+    contexts: Int,
+    adaptShift: Int,
+    liveCountBuckets: Int,
+    format: RangeFormat,
+): BitModel {
+    requireLiveCountBuckets(liveCountBuckets)
+    return BitModel(contexts * excludedTreesPerContext(liveCountBuckets) * BYTE_TREE_SIZE, adaptShift, format)
+}
 
 /**
  * Codes a byte known to differ from every one of the [excluded] values, through [model]'s [context].
@@ -41,31 +63,33 @@ fun excludedLiteralModel(contexts: Int, adaptShift: Int = DEFAULT_PROBABILITY_AD
  * live, and through the *plain* tree once none is. The paired [decodeExcludedLiteral] inverts it
  * exactly.
  *
- * @param model a bank built by [excludedLiteralModel].
+ * @param model a model built by [excludedLiteralModel].
  * @param context which of the model's contexts this byte is coded in.
  * @param value the byte to code, in `0..255`.
  * @param excluded the values the byte is known not to equal. Their order is significant: the earlier
  * a value sits, the more of the byte it biases, so the caller leads with the one it trusts most.
  * @param excludedCount how many leading entries of [excluded] apply here, in
  * `0..`[MAX_EXCLUDED_COUNT]; the rest of the array is ignored.
+ * @param liveCountBuckets how many buckets the live count folds into, at least
+ * [MIN_LIVE_COUNT_BUCKETS]; must be the value [model] was built with, and the value the decoder is
+ * given.
  */
+@JvmOverloads
 fun RangeEncoder.encodeExcludedLiteral(
     model: BitModel,
     context: Int,
     value: Int,
     excluded: IntArray,
     excludedCount: Int,
+    liveCountBuckets: Int = LIVE_COUNT_BUCKETS,
 ) {
-    require(excludedCount in 0..MAX_EXCLUDED_COUNT) {
-        "excludedCount must be in 0..$MAX_EXCLUDED_COUNT but was $excludedCount"
-    }
-    val base = context * EXCLUDED_TREES_PER_CONTEXT * BYTE_TREE_SIZE
+    val base = contextBase(context, excludedCount, liveCountBuckets)
     var live = (1 shl excludedCount) - 1
     var node = 1
     var i = Byte.SIZE_BITS
     while (--i >= 0) {
         val bit = (value ushr i) and 1
-        encodeBit(model, base + subTreeOf(excluded, live, i) * BYTE_TREE_SIZE + node, bit)
+        encodeBit(model, base + subTreeOf(excluded, live, i, liveCountBuckets) * BYTE_TREE_SIZE + node, bit)
         node = (node shl 1) or bit
         live = narrow(excluded, live, i, bit)
     }
@@ -74,42 +98,67 @@ fun RangeEncoder.encodeExcludedLiteral(
 /**
  * Decodes one byte from [model]'s [context], the exact inverse of [encodeExcludedLiteral].
  *
- * @param model a bank built by [excludedLiteralModel].
+ * @param model a model built by [excludedLiteralModel].
  * @param context which of the model's contexts this byte was coded in.
  * @param excluded the values the byte is known not to equal. Their order is significant: the earlier
  * a value sits, the more of the byte it biases, so the caller leads with the one it trusts most.
  * @param excludedCount how many leading entries of [excluded] apply here, in
  * `0..`[MAX_EXCLUDED_COUNT]; the rest of the array is ignored.
+ * @param liveCountBuckets how many buckets the live count folds into, at least
+ * [MIN_LIVE_COUNT_BUCKETS]; must be the value [model] was built with, and the value the encoder was
+ * given.
  * @return the decoded byte, in `0..255`.
  */
+@JvmOverloads
 fun RangeDecoder.decodeExcludedLiteral(
     model: BitModel,
     context: Int,
     excluded: IntArray,
     excludedCount: Int,
+    liveCountBuckets: Int = LIVE_COUNT_BUCKETS,
 ): Int {
-    require(excludedCount in 0..MAX_EXCLUDED_COUNT) {
-        "excludedCount must be in 0..$MAX_EXCLUDED_COUNT but was $excludedCount"
-    }
-    val base = context * EXCLUDED_TREES_PER_CONTEXT * BYTE_TREE_SIZE
+    val base = contextBase(context, excludedCount, liveCountBuckets)
     var live = (1 shl excludedCount) - 1
     var node = 1
     var i = Byte.SIZE_BITS
     while (--i >= 0) {
-        val bit = decodeBit(model, base + subTreeOf(excluded, live, i) * BYTE_TREE_SIZE + node)
+        val bit = decodeBit(model, base + subTreeOf(excluded, live, i, liveCountBuckets) * BYTE_TREE_SIZE + node)
         node = (node shl 1) or bit
         live = narrow(excluded, live, i, bit)
     }
     return node - BYTE_TREE_SIZE
 }
 
-private fun subTreeOf(excluded: IntArray, live: Int, bitIndex: Int): Int {
+/**
+ * Index of the first probability of [context] in a model folding the live count into
+ * [liveCountBuckets] buckets.
+ *
+ * @throws IllegalArgumentException when [excludedCount] is outside `0..`[MAX_EXCLUDED_COUNT] or
+ * [liveCountBuckets] is below [MIN_LIVE_COUNT_BUCKETS].
+ */
+private fun contextBase(context: Int, excludedCount: Int, liveCountBuckets: Int): Int {
+    require(excludedCount in 0..MAX_EXCLUDED_COUNT) {
+        "excludedCount must be in 0..$MAX_EXCLUDED_COUNT but was $excludedCount"
+    }
+    requireLiveCountBuckets(liveCountBuckets)
+    return context * excludedTreesPerContext(liveCountBuckets) * BYTE_TREE_SIZE
+}
+
+/**
+ * Tree a bit is coded through: the plain one when nothing is live, otherwise the matched tree of the
+ * bucket the live count falls in, picked by the next bit of the leading live value.
+ */
+private fun subTreeOf(excluded: IntArray, live: Int, bitIndex: Int, liveCountBuckets: Int): Int {
     if (live == 0) return 0
-    val bucket = minOf(live.countOneBits() - 1, LIVE_COUNT_BUCKETS - 1)
+    val bucket = minOf(live.countOneBits() - 1, liveCountBuckets - 1)
     val leadingBit = (excluded[live.countTrailingZeroBits()] ushr bitIndex) and 1
     return 1 + bucket * MATCHED_TREES_PER_BUCKET + leadingBit
 }
 
+/**
+ * Drops from [live] every value whose bit at [bitIndex] differs from the [bit] just coded, leaving
+ * those still agreeing with the coded prefix.
+ */
 private fun narrow(excluded: IntArray, live: Int, bitIndex: Int, bit: Int): Int {
     var remaining = live
     var result = 0
@@ -122,10 +171,25 @@ private fun narrow(excluded: IntArray, live: Int, bitIndex: Int, bit: Int): Int 
 }
 
 /**
- * Buckets the number of values still live at a coded bit is folded into, counting from one upwards
- * and saturating at the last bucket.
+ * Default number of buckets the count of values still live at a coded bit is folded into, counting
+ * from one upwards and saturating at the last bucket.
  */
 private const val LIVE_COUNT_BUCKETS = 2
+
+/**
+ * Fewest live-count buckets a model may fold into: a bucket count below it leaves a live value no
+ * matched tree to be coded through.
+ */
+const val MIN_LIVE_COUNT_BUCKETS = 1
+
+/**
+ * @throws IllegalArgumentException when [liveCountBuckets] is below [MIN_LIVE_COUNT_BUCKETS].
+ */
+private fun requireLiveCountBuckets(liveCountBuckets: Int) {
+    require(liveCountBuckets >= MIN_LIVE_COUNT_BUCKETS) {
+        "liveCountBuckets must be at least $MIN_LIVE_COUNT_BUCKETS but was $liveCountBuckets"
+    }
+}
 
 /**
  * Matched trees a bucket owns: one per value of the next bit of the bucket's leading live value.
@@ -136,7 +200,8 @@ private const val MATCHED_TREES_PER_BUCKET = 2
  * Trees a context owns: the plain one, reached only once nothing is live, plus the matched trees of
  * every bucket.
  */
-private const val EXCLUDED_TREES_PER_CONTEXT = 1 + LIVE_COUNT_BUCKETS * MATCHED_TREES_PER_BUCKET
+private fun excludedTreesPerContext(liveCountBuckets: Int) =
+    1 + liveCountBuckets * MATCHED_TREES_PER_BUCKET
 
 /**
  * Nodes a tree over a byte is addressed by: the bits coded so far, leaving slot 0 unused so that the

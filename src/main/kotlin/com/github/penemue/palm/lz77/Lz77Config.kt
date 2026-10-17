@@ -124,10 +124,10 @@ data class Lz77Config(
     val windowSize: Int get() = 1 shl windowBits
 
     /**
-     * Longest match, in bytes, that [Lz77Dictionary] will report, spanning both the short and the
-     * long length range a token format names.
+     * Longest match, in bytes, that [Lz77Dictionary] will report: the longest one the format palm
+     * writes with can code, so every length that format can code is reachable.
      */
-    val maxMatch: Int get() = minMatch + shortLengthCount(lengthBits) + (1 shl lengthBits) - 1
+    val maxMatch: Int get() = LZ77_CURRENT_FORMAT.maxMatch(this)
 
     /**
      * Largest match distance that can be reported: `windowSize - 1`.

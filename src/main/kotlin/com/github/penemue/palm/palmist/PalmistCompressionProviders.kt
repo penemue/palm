@@ -45,27 +45,53 @@ private class PalmistCompressionMethod : CompressionMethod() {
                 "Prediction compression requires a PalmistConfig but got ${config::class.simpleName}",
             )
         }
-        writeGeometry(output, palmistConfig)
-        source.palmistEncode(RangePalmistTokenConsumer(palmistConfig, output))
+        PALMIST_CURRENT_FORMAT.validate(palmistConfig)
+        writeGeometry(output, palmistConfig, PALMIST_CURRENT_FORMAT)
+        source.palmistEncode(RangePalmistTokenConsumer(palmistConfig, output, PALMIST_CURRENT_FORMAT))
     }
 
     override fun decompressBody(input: InputStream, output: OutputStream, originalSize: Long) {
-        val config = readGeometry(input)
-        decodeTokens(RangePalmistTokenReader(config, input), output, originalSize)
+        val (orderCount, format) = readGeometry(input)
+        decodeTokens(RangePalmistTokenReader(orderCount, input, format), output, originalSize)
     }
 }
 
-private fun writeGeometry(output: OutputStream, config: PalmistConfig) {
+/**
+ * Writes the geometry: the version marker, the format version behind it, then the order count.
+ */
+private fun writeGeometry(output: OutputStream, config: PalmistConfig, format: PalmistFormat) {
+    output.writeVarInt(GEOMETRY_VERSION_MARKER)
+    output.writeVarInt(format.version)
     output.writeVarInt(config.orderCount)
 }
 
-private fun readGeometry(input: InputStream): PalmistConfig {
+/**
+ * Reads the order count and the parameter set it is to be decoded with. A geometry opening with the
+ * version marker records its version right after it; anything else is the order count of a stream
+ * written before versions were recorded.
+ */
+private fun readGeometry(input: InputStream): Pair<Int, PalmistFormat> {
     try {
-        val orderCount = input.readVarInt()
-        // The geometry comes from an untrusted header, and PalmistConfig bounds the order count
-        // before the models are sized from it.
+        val first = input.readVarInt()
+        val (format, orderCount) = if (first == GEOMETRY_VERSION_MARKER) {
+            val format = try {
+                palmistFormat(input.readVarInt())
+            } catch (exception: IllegalStateException) {
+                throw IOException(exception.message, exception)
+            }
+            format to input.readVarInt()
+        } else {
+            PALMIST_LEGACY_FORMAT to first
+        }
+        // The geometry comes from an untrusted header, so bound the order count before the models
+        // are sized from it. The bound is the deepest ensemble the model can hold rather than the
+        // deepest one the compressor writes, so a stream written under a wider bound still decodes.
         return try {
-            PalmistConfig(orderCount = orderCount)
+            require(orderCount in MIN_ORDER_COUNT..format.maxDecodableOrderCount) {
+                "orderCount must be in $MIN_ORDER_COUNT..${format.maxDecodableOrderCount}" +
+                    " for format version ${format.version}"
+            }
+            orderCount to format
         } catch (exception: IllegalArgumentException) {
             throw IOException("Invalid prediction geometry", exception)
         }

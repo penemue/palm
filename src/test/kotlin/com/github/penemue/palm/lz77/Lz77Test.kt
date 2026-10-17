@@ -18,9 +18,9 @@ package com.github.penemue.palm.lz77
 import com.github.penemue.palm.CompressionProvider
 import com.github.penemue.palm.vlq.writeVarInt
 import java.io.ByteArrayInputStream
-
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.Base64
 import java.util.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -36,6 +36,29 @@ private val LZ77_PROVIDER_IDS = listOf(
     "lz77-greedy",
     "lz77-lazy",
 )
+
+/**
+ * Base64 of a payload written by release 0.1.0, which carries no format version of its own.
+ */
+private const val LEGACY_LZ77_PAYLOAD =
+    "UEFMTQE6FAgFCAAoGD2G0QDAXDEXEsnYS+e6M1LofDjaX3H7CLzHRaZrxMuugHWAWHNX1gPqmryw91TeTQAA"
+
+/**
+ * Index of the LZ77 geometry in a payload of fewer than 128 bytes: four magic bytes, the family byte
+ * and a one-byte original size precede it.
+ */
+private const val GEOMETRY_OFFSET = 6
+
+/**
+ * A format version no release has registered.
+ */
+private const val UNKNOWN_VERSION = 99
+
+/**
+ * Base64 of the bytes [LEGACY_LZ77_PAYLOAD] must restore to.
+ */
+private const val LEGACY_PLAINTEXT =
+    "UGFsbSAwLjEuMCBjb21wYXRpYmlsaXR5IGZpeHR1cmU6IGFicmFjYWRhYnJhIGFicmFjYWRhYnJhCg=="
 
 /**
  * Byte value that separates planted runs, so a match can only ever stop at it.
@@ -102,6 +125,7 @@ class Lz77Test {
      * Encodes [data] with every LZ77 provider and reconstructs each payload, asserting a lossless
      * round trip.
      *
+     * @param data payload every provider must return byte for byte.
      * @param config geometry to compress with, or `null` to let each method use its default; the
      * decoder always rebuilds the geometry from the payload.
      */
@@ -116,12 +140,18 @@ class Lz77Test {
         }
     }
 
+    /**
+     * Tokens the greedy parser emits for [data] under [config].
+     */
     private fun tokensOf(data: ByteArray, config: Lz77Config): List<String> {
         val consumer = RecordingConsumer(config)
         data.lz77GreedyEncode(consumer, RepDistances(config.repDistanceCount))
         return consumer.tokens
     }
 
+    /**
+     * Tokens the lazy parser emits for [data] under [config].
+     */
     private fun lazyTokensOf(data: ByteArray, config: Lz77Config): List<String> {
         val consumer = RecordingConsumer(config)
         data.lz77LazyEncode(consumer, RepDistances(config.repDistanceCount))
@@ -148,15 +178,65 @@ class Lz77Test {
     }
 
     @Test
+    fun `payload written by release 0_1_0 remains readable`() {
+        val restored = ByteArrayOutputStream()
+        CompressionProvider.find("lz77-greedy").create().decompress(
+            ByteArrayInputStream(Base64.getDecoder().decode(LEGACY_LZ77_PAYLOAD)),
+            restored,
+        )
+        assertContentEquals(Base64.getDecoder().decode(LEGACY_PLAINTEXT), restored.toByteArray())
+    }
+
+    @Test
+    fun `a payload written now is the one release 0_1_0 wrote`() {
+        // The parameter set is still the 0.1.0 one, so the body carries no version prefix and a
+        // 0.1.0 decoder reads what this release writes.
+        val packed = ByteArrayOutputStream().also {
+            CompressionProvider.find("lz77-greedy").create().compress(
+                ByteArrayInputStream(Base64.getDecoder().decode(LEGACY_PLAINTEXT)),
+                it,
+            )
+        }.toByteArray()
+        assertContentEquals(Base64.getDecoder().decode(LEGACY_LZ77_PAYLOAD), packed)
+    }
+
+    @Test
+    fun `a version-prefixed body decodes with the version it names`() {
+        val method = CompressionProvider.find("lz77-greedy").create()
+        val restored = ByteArrayOutputStream()
+        method.decompress(ByteArrayInputStream(withVersionPrefix(LZ77_LEGACY_VERSION)), restored)
+        assertContentEquals(Base64.getDecoder().decode(LEGACY_PLAINTEXT), restored.toByteArray())
+    }
+
+    @Test
+    fun `unknown LZ77 format version is rejected`() {
+        val method = CompressionProvider.find("lz77-greedy").create()
+        assertFailsWith<IOException> {
+            method.decompress(ByteArrayInputStream(withVersionPrefix(UNKNOWN_VERSION)), ByteArrayOutputStream())
+        }
+    }
+
+    /**
+     * [LEGACY_LZ77_PAYLOAD] with a version prefix naming [version] inserted before its geometry.
+     */
+    private fun withVersionPrefix(version: Int): ByteArray {
+        val legacy = Base64.getDecoder().decode(LEGACY_LZ77_PAYLOAD)
+        val prefix = ByteArrayOutputStream().also {
+            it.writeVarInt(GEOMETRY_VERSION_MARKER)
+            it.writeVarInt(version)
+        }.toByteArray()
+        return legacy.copyOfRange(0, GEOMETRY_OFFSET) + prefix + legacy.copyOfRange(GEOMETRY_OFFSET, legacy.size)
+    }
+
+    @Test
     fun `a windowBits the config rejects fails the decode`() {
         val method = CompressionProvider.find("lz77-greedy").create()
         val packed = ByteArrayOutputStream().also {
             method.compress(ByteArrayInputStream("repetitive repetitive repetitive".toByteArray()), it)
         }.toByteArray()
-        // Common header is MAGIC[0..3] + family[4] + originalSize VLQ (one byte at 5 for this
-        // 32-byte input); the LZ77 body then starts with windowBits at index 6. One past
-        // MAX_WINDOW_BITS, so rebuilding the geometry fails before the decoder sizes its ring.
-        val oversizedWindow = packed.copyOf().also { it[6] = (MAX_WINDOW_BITS + 1).toByte() }
+        // The body opens with windowBits. One past MAX_WINDOW_BITS must fail before the ring is
+        // allocated.
+        val oversizedWindow = packed.copyOf().also { it[GEOMETRY_OFFSET] = (MAX_WINDOW_BITS + 1).toByte() }
         assertFailsWith<IOException> {
             method.decompress(ByteArrayInputStream(oversizedWindow), ByteArrayOutputStream())
         }
@@ -168,12 +248,11 @@ class Lz77Test {
         val packed = ByteArrayOutputStream().also {
             method.compress(ByteArrayInputStream("repetitive repetitive repetitive".toByteArray()), it)
         }.toByteArray()
-        // The geometry sub-header follows the common header: windowBits at index 6, then lengthBits,
-        // minMatch and repDistanceCount. Replace that last VLQ with 257 (two bytes: payload 1 with the
-        // continuation bit, then 2), one past MAX_REP_DISTANCE_COUNT, so rebuilding the geometry fails
-        // before any token is decoded.
+        // windowBits, lengthBits and minMatch precede repDistanceCount. Replace it with 257 (two
+        // bytes), one past the bound.
+        val at = GEOMETRY_OFFSET + 3
         val oversizedRepCount =
-            packed.copyOfRange(0, 9) + byteArrayOf(0x81.toByte(), 0x02) + packed.copyOfRange(10, packed.size)
+            packed.copyOfRange(0, at) + byteArrayOf(0x81.toByte(), 0x02) + packed.copyOfRange(at + 1, packed.size)
         assertFailsWith<IOException> {
             method.decompress(ByteArrayInputStream(oversizedRepCount), ByteArrayOutputStream())
         }
@@ -185,12 +264,11 @@ class Lz77Test {
         val packed = ByteArrayOutputStream().also {
             method.compress(ByteArrayInputStream("repetitive repetitive repetitive".toByteArray()), it)
         }.toByteArray()
-        // The geometry sub-header follows the common header: windowBits at index 6, then lengthBits
-        // and minMatch. Replace that last VLQ with one past MAX_MIN_MATCH: an unbounded minMatch
-        // overflows the length a decoded match reports, so the geometry must be refused outright.
-        val oversizedMinMatch = packed.copyOfRange(0, 8) +
+        // windowBits and lengthBits precede minMatch. Replace it with one past MAX_MIN_MATCH.
+        val at = GEOMETRY_OFFSET + 2
+        val oversizedMinMatch = packed.copyOfRange(0, at) +
                 ByteArrayOutputStream().also { it.writeVarInt(MAX_MIN_MATCH + 1) }.toByteArray() +
-                packed.copyOfRange(9, packed.size)
+                packed.copyOfRange(at + 1, packed.size)
         assertFailsWith<IOException> {
             method.decompress(ByteArrayInputStream(oversizedMinMatch), ByteArrayOutputStream())
         }
@@ -782,7 +860,7 @@ class Lz77Test {
     @Test
     fun `a decoded length always fits the configured alphabet`() {
         // The range format codes a long length through a lengthBits-deep tree, so the tree spans
-        // exactly the legal alphabet and no stream can name a length past maxMatch. Drive every
+        // exactly the legal alphabet and no stream can code a length past maxMatch. Drive every
         // reachable code point of the long tree through the reader and check the plain length.
         for (lengthBits in listOf(1, SHORT_LENGTH_BITS, SHORT_LENGTH_BITS + 1, DEFAULT_LENGTH_BITS)) {
             val config = Lz77Config(windowBits = 12, lengthBits = lengthBits, minMatch = HASH_LENGTH)
@@ -816,6 +894,50 @@ class Lz77Test {
     }
 
     @Test
+    fun `every registered format version codes the longest match it reports`() {
+        // Coded and read back through the coder itself, so a maxMatch past the two length trees
+        // would come back truncated.
+        val versions = (0..UNKNOWN_VERSION).filter { runCatching { lz77Format(it) }.isSuccess }
+        assertTrue(versions.isNotEmpty(), "no format version is registered")
+        for (version in versions) {
+            val format = lz77Format(version)
+            for (lengthBits in 1..MAX_LENGTH_BITS) {
+                val config = Lz77Config(windowBits = 12, lengthBits = lengthBits, minMatch = HASH_LENGTH)
+                val longest = format.maxMatch(config)
+                val packed = ByteArrayOutputStream()
+                RangeLz77TokenConsumer(config, packed, RepDistances(config.repDistanceCount), format).apply {
+                    match(longest, 1, LAST_BYTE_UNDER_TEST)
+                    finish()
+                }
+                val reader = RangeLz77TokenReader(
+                    config,
+                    ByteArrayInputStream(packed.toByteArray()),
+                    RepDistances(config.repDistanceCount),
+                    format,
+                )
+                assertTrue(reader.readIsMatch(), "version $version lengthBits $lengthBits")
+                assertEquals(longest, reader.readLength(), "version $version lengthBits $lengthBits")
+            }
+        }
+    }
+
+    @Test
+    fun `a geometry reaching past the length alphabet is refused`() {
+        // Only a format whose short range is narrower than the shipped one can produce such a
+        // geometry, since maxMatch is derived from the shipped one.
+        val config = Lz77Config(windowBits = 12, lengthBits = DEFAULT_LENGTH_BITS, minMatch = HASH_LENGTH)
+        val narrowShortRange = Lz77Format(LZ77_CURRENT_FORMAT.version, shortLengthBits = SHORT_LENGTH_BITS - 1)
+        assertFailsWith<IllegalArgumentException> {
+            RangeLz77TokenConsumer(
+                config,
+                ByteArrayOutputStream(),
+                RepDistances(config.repDistanceCount),
+                narrowShortRange,
+            )
+        }
+    }
+
+    @Test
     fun `every previous-length group is reachable`() {
         // The previous match's length group picks the length context on both sides. A group no
         // length maps to would be dead, and a length mapping past the count would corrupt the
@@ -840,12 +962,57 @@ class Lz77Test {
     }
 
     @Test
+    fun `a smaller previous-length group count folds every length inside it`() {
+        // A format with fewer groups sizes its length models by that count, so no length may map to
+        // a group past it, and every group it keeps must still be reachable.
+        val values = 0 until (1 shl MAX_LENGTH_BITS)
+        for (groupCount in 1..LENGTH_PREV_GROUPS) {
+            assertEquals(
+                (0 until groupCount).toSet(),
+                values.map { lengthPrevGroup(it, groupCount) }.toSet(),
+                "groupCount $groupCount",
+            )
+        }
+    }
+
+    @Test
+    fun `a format with fewer previous-length groups round trips every length`() {
+        val config = Lz77Config(windowBits = 12, lengthBits = DEFAULT_LENGTH_BITS, minMatch = HASH_LENGTH)
+        val lengths = (config.minMatch..config.maxMatch).toList()
+        for (groupCount in 1 until LENGTH_PREV_GROUPS) {
+            val format = Lz77Format(LZ77_CURRENT_FORMAT.version, lengthPreviousGroups = groupCount)
+            val repDistances = RepDistances(config.repDistanceCount)
+            val packed = ByteArrayOutputStream()
+            val consumer = RangeLz77TokenConsumer(config, packed, repDistances, format)
+            for (length in lengths) {
+                consumer.match(length, 1, LAST_BYTE_UNDER_TEST)
+                repDistances.remember(1)
+            }
+            consumer.finish()
+
+            val readerRepDistances = RepDistances(config.repDistanceCount)
+            val reader = RangeLz77TokenReader(
+                config,
+                ByteArrayInputStream(packed.toByteArray()),
+                readerRepDistances,
+                format,
+            )
+            for (expected in lengths) {
+                assertTrue(reader.readIsMatch(), "groupCount $groupCount: a match token should be read back")
+                assertEquals(expected, reader.readLength(), "groupCount $groupCount length mismatch")
+                readerRepDistances.remember(reader.readDistance())
+            }
+        }
+    }
+
+    @Test
     fun `the narrowest length alphabet keeps every match inside the geometry`() {
         // lengthBits 1 is the narrowest length alphabet, so a long run must be split into many
         // short matches, each no longer than maxMatch and each within maxDistance.
         val config = Lz77Config(windowBits = 10, lengthBits = 1, minMatch = HASH_LENGTH)
         assertEquals(
-            config.minMatch + shortLengthCount(config.lengthBits) + (1 shl config.lengthBits) - 1,
+            config.minMatch + shortLengthCount(config.lengthBits, LZ77_CURRENT_FORMAT.shortLengthBits) +
+                    (1 shl config.lengthBits) - 1,
             config.maxMatch,
             "maxMatch must span the short range and the long one together",
         )

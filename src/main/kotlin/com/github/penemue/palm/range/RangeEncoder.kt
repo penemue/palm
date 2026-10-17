@@ -28,14 +28,18 @@ import java.io.OutputStream
  * wire.
  *
  * The coder keeps a 32-bit range and a low bound with one carry byte of headroom. Whenever the range
- * would fall below [RANGE_TOP] it renormalizes, shipping the settled high byte through a carry-aware
- * cache so a late `+1` can still propagate. [finish] flushes the five pending bytes.
+ * would fall below the format's threshold it renormalizes, shipping the settled high byte through a
+ * carry-aware cache so a late `+1` can still propagate. [finish] flushes the five pending bytes.
  *
  * This class is **not** thread-safe, writes to [out] incrementally, and does not close it.
  *
  * @param out destination for the coded bytes.
+ * @param format probability precision and renormalization threshold for this stream.
  */
-class RangeEncoder(private val out: OutputStream) {
+class RangeEncoder @JvmOverloads constructor(
+    private val out: OutputStream,
+    private val format: RangeFormat = DEFAULT_RANGE_FORMAT,
+) {
 
     private var low = 0L
     private var range = 0xFFFFFFFFL
@@ -52,7 +56,7 @@ class RangeEncoder(private val out: OutputStream) {
      */
     fun encodeBit(model: BitModel, index: Int, bit: Int) {
         // Split the current range in proportion to the zero-bit probability.
-        val bound = (range ushr PROBABILITY_BITS) * model.probabilityOfZero(index)
+        val bound = (range ushr format.probabilityBits) * model.probabilityOfZero(index)
         if (bit == 0) {
             range = bound
         } else {
@@ -60,7 +64,7 @@ class RangeEncoder(private val out: OutputStream) {
             range -= bound
         }
         model.adapt(index, bit)
-        while (range < RANGE_TOP) {
+        while (range < format.rangeTop) {
             range = range shl 8
             shiftLow()
         }
@@ -79,7 +83,7 @@ class RangeEncoder(private val out: OutputStream) {
         while (--i >= 0) {
             range = range ushr 1
             if (((value ushr i) and 1) != 0) low += range
-            if (range < RANGE_TOP) {
+            if (range < format.rangeTop) {
                 range = range shl 8
                 shiftLow()
             }

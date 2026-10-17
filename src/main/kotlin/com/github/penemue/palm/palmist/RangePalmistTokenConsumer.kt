@@ -16,6 +16,7 @@
 package com.github.penemue.palm.palmist
 
 import com.github.penemue.palm.range.BitModel
+
 import com.github.penemue.palm.range.RangeEncoder
 import com.github.penemue.palm.range.encodeExcludedLiteral
 import com.github.penemue.palm.range.excludedLiteralModel
@@ -37,14 +38,42 @@ import java.io.OutputStream
  * Calling [finish] flushes the range coder without closing the destination; no explicit end marker is
  * written.
  *
- * @param config geometry of the prediction model; the paired reader must be given the same one.
+ * @param config geometry of the prediction model.
+ * @param output destination for the coded stream.
+ * @param format parameter set that defines the model layout and range coder for the stream.
  */
-class RangePalmistTokenConsumer(config: PalmistConfig, output: OutputStream) : PalmistTokenConsumer {
-    private val encoder = RangeEncoder(output)
-    private val model = MultiOrderByteModel(config.orderCount)
-    private val state = ChainState(config.orderCount)
-    private val chainModel = BitModel(state.chainModelSize)
-    private val escapeModel = excludedLiteralModel(ESCAPE_CONTEXTS, ESCAPE_MODEL_ADAPT_SHIFT)
+class RangePalmistTokenConsumer internal constructor(
+    config: PalmistConfig,
+    output: OutputStream,
+    private val format: PalmistFormat,
+) : PalmistTokenConsumer {
+
+    /**
+     * A consumer coding with the parameter set every stream is written with now.
+     */
+    constructor(config: PalmistConfig, output: OutputStream) : this(config, output, PALMIST_CURRENT_FORMAT)
+
+    private val encoder = RangeEncoder(output, format.range)
+    private val model = MultiOrderByteModel(
+        config.orderCount,
+        format.baseOrder,
+        format.confidenceSlotBits,
+        format.maxConfidence,
+        format.shallowSlotBits,
+    )
+    private val state = ChainState(
+        config.orderCount,
+        format.confidenceStates,
+        format.exhaustedHistoryStates,
+        format.runBuckets,
+    )
+    private val chainModel = BitModel(state.chainModelSize, format.chainModelAdaptShift, format.range)
+    private val escapeModel = excludedLiteralModel(
+        ESCAPE_CONTEXTS,
+        format.escapeModelAdaptShift,
+        format.liveCountBuckets,
+        format.range,
+    )
 
     override fun literal(value: Int) {
         val count = model.count
@@ -65,7 +94,14 @@ class RangePalmistTokenConsumer(config: PalmistConfig, output: OutputStream) : P
             index++
         }
         if (position < 0) {
-            encoder.encodeExcludedLiteral(escapeModel, state.previousLiteral, value, predictions, count)
+            encoder.encodeExcludedLiteral(
+                escapeModel,
+                state.previousLiteral,
+                value,
+                predictions,
+                count,
+                format.liveCountBuckets,
+            )
         }
         state.advance(value, exhausted = position < 0)
         model.learn(value)
@@ -81,8 +117,3 @@ class RangePalmistTokenConsumer(config: PalmistConfig, output: OutputStream) : P
  * for an escaped byte is chosen by the byte that precedes it.
  */
 internal const val ESCAPE_CONTEXTS = 256
-
-/**
- * Adaptation rate of the escape model.
- */
-internal const val ESCAPE_MODEL_ADAPT_SHIFT = 5

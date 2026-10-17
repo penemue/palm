@@ -28,6 +28,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
+ * Width of the raw values a renormalization test interleaves with adaptive bits.
+ */
+private const val RAW_WIDTH_UNDER_TEST = 20
+
+/**
  * Tests for the adaptive binary range coder ([RangeEncoder] / [RangeDecoder] / [BitModel]) in
  * isolation from any token format: carry propagation, renormalization, raw-bit coding and
  * end-of-stream handling.
@@ -428,6 +433,147 @@ class RangeCoderTest {
     }
 
     @Test
+    fun `the adaptation shift is bounded by the precision of the format in use`() {
+        for (probabilityBits in MIN_PROBABILITY_BITS..MAX_PROBABILITY_BITS) {
+            val format = RangeFormat(probabilityBits = probabilityBits)
+            val slowest = probabilityBits - 1
+            BitModel(4, slowest, format)
+            assertFailsWith<IllegalArgumentException>("probabilityBits=$probabilityBits") {
+                BitModel(4, slowest + 1, format)
+            }
+        }
+    }
+
+    @Test
+    fun `a probability precision outside its bounds is rejected`() {
+        val widths =
+            intArrayOf(Int.MIN_VALUE, -1, 0, MIN_PROBABILITY_BITS - 1, MAX_PROBABILITY_BITS + 1, Int.SIZE_BITS)
+        for (probabilityBits in widths) {
+            assertFailsWith<IllegalArgumentException>("probabilityBits=$probabilityBits") {
+                RangeFormat(probabilityBits = probabilityBits)
+            }
+        }
+    }
+
+    @Test
+    fun `a renormalization threshold outside its bounds is rejected`() {
+        for (probabilityBits in MIN_PROBABILITY_BITS..MAX_PROBABILITY_BITS) {
+            val lowest = 1L shl probabilityBits
+            RangeFormat(probabilityBits, lowest)
+            RangeFormat(probabilityBits, MAX_RANGE_TOP)
+            for (rangeTop in longArrayOf(Long.MIN_VALUE, -1, 0, lowest - 1, MAX_RANGE_TOP + 1, Long.MAX_VALUE)) {
+                assertFailsWith<IllegalArgumentException>("probabilityBits=$probabilityBits rangeTop=$rangeTop") {
+                    RangeFormat(probabilityBits, rangeTop)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a warm-up rate outside its bounds is rejected`() {
+        for (probabilityBits in MIN_PROBABILITY_BITS..MAX_PROBABILITY_BITS) {
+            val slowest = probabilityBits - 1
+            RangeFormat(probabilityBits, warmUpAdaptShift = MIN_PROBABILITY_ADAPT_SHIFT)
+            RangeFormat(probabilityBits, warmUpAdaptShift = slowest)
+            for (shift in intArrayOf(Int.MIN_VALUE, MIN_PROBABILITY_ADAPT_SHIFT - 1, slowest + 1, Int.MAX_VALUE)) {
+                assertFailsWith<IllegalArgumentException>("probabilityBits=$probabilityBits shift=$shift") {
+                    RangeFormat(probabilityBits, warmUpAdaptShift = shift)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a model rejects a rate faster than the warm-up rate of its format`() {
+        val format = RangeFormat(warmUpAdaptShift = MIN_PROBABILITY_ADAPT_SHIFT + 1)
+        BitModel(4, format.warmUpAdaptShift, format)
+        assertFailsWith<IllegalArgumentException> { BitModel(4, format.warmUpAdaptShift - 1, format) }
+    }
+
+    @Test
+    fun `every warm-up rate round trips a skewed stream`() {
+        val random = Random(2029)
+        val bits = List(2000) { if (random.nextInt(8) == 0) 1 else 0 }
+        for (warmUp in MIN_PROBABILITY_ADAPT_SHIFT..DEFAULT_PROBABILITY_ADAPT_SHIFT) {
+            val format = RangeFormat(warmUpAdaptShift = warmUp)
+            val output = ByteArrayOutputStream()
+            val encoder = RangeEncoder(output, format)
+            val encodeModel = BitModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, format)
+            bits.forEach { encoder.encodeBit(encodeModel, 0, it) }
+            encoder.finish()
+
+            val decoder = RangeDecoder(ByteArrayInputStream(output.toByteArray()), format)
+            val decodeModel = BitModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, format)
+            assertEquals(bits, List(bits.size) { decoder.decodeBit(decodeModel, 0) }, "warmUp=$warmUp")
+        }
+    }
+
+    @Test
+    fun `a slower warm-up rate moves a fresh probability less`() {
+        val fastFormat = RangeFormat(warmUpAdaptShift = MIN_PROBABILITY_ADAPT_SHIFT)
+        val slowFormat = RangeFormat(warmUpAdaptShift = DEFAULT_PROBABILITY_ADAPT_SHIFT)
+        val fast = BitModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, fastFormat)
+        val slow = BitModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, slowFormat)
+        fast.adapt(0, 0)
+        slow.adapt(0, 0)
+        assertTrue(
+            fast.probabilityOfZero(0) > slow.probabilityOfZero(0),
+            "the warm-up rate must be the rate a fresh context adapts at",
+        )
+    }
+
+    @Test
+    fun `the lowest renormalization threshold round trips every precision`() {
+        val random = Random(2028)
+        val bits = List(2000) { if (random.nextInt(8) == 0) 1 else 0 }
+        val raw = List(200) { random.nextInt(1 shl RAW_WIDTH_UNDER_TEST) }
+        for (probabilityBits in MIN_PROBABILITY_BITS..MAX_PROBABILITY_BITS) {
+            val format = RangeFormat(probabilityBits, 1L shl probabilityBits)
+            val output = ByteArrayOutputStream()
+            val encoder = RangeEncoder(output, format)
+            val encodeModel = BitModel(1, MIN_PROBABILITY_ADAPT_SHIFT, format)
+            bits.forEach { encoder.encodeBit(encodeModel, 0, it) }
+            raw.forEach { encoder.encodeRawBits(it, RAW_WIDTH_UNDER_TEST) }
+            encoder.finish()
+
+            val decoder = RangeDecoder(ByteArrayInputStream(output.toByteArray()), format)
+            val decodeModel = BitModel(1, MIN_PROBABILITY_ADAPT_SHIFT, format)
+            assertEquals(
+                bits,
+                List(bits.size) { decoder.decodeBit(decodeModel, 0) },
+                "probabilityBits=$probabilityBits",
+            )
+            assertEquals(
+                raw,
+                List(raw.size) { decoder.decodeRawBits(RAW_WIDTH_UNDER_TEST) },
+                "probabilityBits=$probabilityBits raw bits",
+            )
+        }
+    }
+
+    @Test
+    fun `every probability precision round trips a skewed stream`() {
+        val random = Random(2027)
+        val bits = List(2000) { if (random.nextInt(8) == 0) 1 else 0 }
+        for (probabilityBits in MIN_PROBABILITY_BITS..MAX_PROBABILITY_BITS) {
+            val format = RangeFormat(probabilityBits = probabilityBits)
+            val output = ByteArrayOutputStream()
+            val encoder = RangeEncoder(output, format)
+            val encodeModel = BitModel(1, MIN_PROBABILITY_ADAPT_SHIFT, format)
+            bits.forEach { encoder.encodeBit(encodeModel, 0, it) }
+            encoder.finish()
+
+            val decoder = RangeDecoder(ByteArrayInputStream(output.toByteArray()), format)
+            val decodeModel = BitModel(1, MIN_PROBABILITY_ADAPT_SHIFT, format)
+            assertEquals(
+                bits,
+                List(bits.size) { decoder.decodeBit(decodeModel, 0) },
+                "probabilityBits=$probabilityBits",
+            )
+        }
+    }
+
+    @Test
     fun `a smaller adaptation shift moves a probability faster`() {
         val fast = BitModel(1, MIN_PROBABILITY_ADAPT_SHIFT)
         val slow = BitModel(1, MAX_PROBABILITY_ADAPT_SHIFT)
@@ -471,7 +617,7 @@ class RangeCoderTest {
         // of the Int addressing a slot, not of the heap, so instantiating it here would ask for
         // gigabytes.
         assertEquals(1 shl 16, MatchedBitTreeModel(1, 16).treeSize)
-        // A context count that would overflow the bank is rejected rather than wrapping.
+        // A context count whose probabilities would not fit an Int index is rejected rather than wrapping.
         assertFailsWith<IllegalArgumentException> { MatchedBitTreeModel(4, MAX_MATCHED_BIT_COUNT) }
         assertFailsWith<IllegalArgumentException> { MatchedBitTreeModel(0, 8) }
     }
@@ -485,6 +631,38 @@ class RangeCoderTest {
                 RangeEncoder(ByteArrayOutputStream()).encodeExcludedLiteral(model, 0, 7, excluded, count)
             }
         }
+    }
+
+    @Test
+    fun `a live-count bucket count below its bound is rejected`() {
+        val model = excludedLiteralModel(1)
+        val excluded = IntArray(1)
+        for (buckets in intArrayOf(Int.MIN_VALUE, -1, MIN_LIVE_COUNT_BUCKETS - 1)) {
+            assertFailsWith<IllegalArgumentException>("builder buckets=$buckets") {
+                excludedLiteralModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, buckets, RangeFormat())
+            }
+            assertFailsWith<IllegalArgumentException>("encoder buckets=$buckets") {
+                RangeEncoder(ByteArrayOutputStream()).encodeExcludedLiteral(model, 0, 7, excluded, 1, buckets)
+            }
+            assertFailsWith<IllegalArgumentException>("decoder buckets=$buckets") {
+                RangeDecoder(ByteArrayInputStream(ByteArray(5))).decodeExcludedLiteral(model, 0, excluded, 1, buckets)
+            }
+        }
+    }
+
+    @Test
+    fun `the fewest live-count buckets round trip a byte against several excluded values`() {
+        val excluded = intArrayOf(1, 2, 3)
+        val format = RangeFormat()
+        val output = ByteArrayOutputStream()
+        val encoder = RangeEncoder(output)
+        val encodeModel = excludedLiteralModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, MIN_LIVE_COUNT_BUCKETS, format)
+        encoder.encodeExcludedLiteral(encodeModel, 0, 0, excluded, excluded.size, MIN_LIVE_COUNT_BUCKETS)
+        encoder.finish()
+
+        val decoder = RangeDecoder(ByteArrayInputStream(output.toByteArray()))
+        val decodeModel = excludedLiteralModel(1, DEFAULT_PROBABILITY_ADAPT_SHIFT, MIN_LIVE_COUNT_BUCKETS, format)
+        assertEquals(0, decoder.decodeExcludedLiteral(decodeModel, 0, excluded, excluded.size, MIN_LIVE_COUNT_BUCKETS))
     }
 
     @Test

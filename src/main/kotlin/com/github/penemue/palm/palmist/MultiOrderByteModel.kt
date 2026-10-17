@@ -20,15 +20,15 @@ import com.github.penemue.palm.util.fibonacciHash
 import com.github.penemue.palm.util.unsignedInt
 
 /**
- * Independent next-byte predictors of order [BASE_ORDER] upwards, presented as one list.
+ * Independent next-byte predictors of order [baseOrder] upwards, presented as one list.
  *
- * Each order keeps its own table of predicted bytes, addressed by that many preceding bytes: the
- * shallowest one indexes its table directly, every deeper one folds its context through a Fibonacci
- * (multiplicative) hash and so shares slots between distinct contexts, in a table twice the size of
- * the order above it, since its context is that much wider. Every slot carries a confidence
- * raised by each byte its prediction gets right and spent to keep that prediction in place, so a
- * prediction confirmed several times survives a burst of outliers while an unconfirmed one is replaced
- * at once.
+ * Each order keeps its own table of predicted bytes, addressed by that many preceding bytes: an order
+ * reading at most two bytes indexes its table by the whole context, every deeper one folds its context
+ * through a Fibonacci (multiplicative) hash and so shares slots between distinct contexts, in a table
+ * twice the size of the order above it, since its context is that much wider. Every slot carries a
+ * confidence raised by each byte its prediction gets right and spent to keep that prediction in place,
+ * so a prediction confirmed several times survives a burst of outliers while an unconfirmed one is
+ * replaced at once.
  *
  * The orders are read as one list of DISTINCT predictions, ordered by descending confidence: a byte
  * several orders agree on appears once, carrying the highest confidence any of them holds for it. The
@@ -39,13 +39,41 @@ import com.github.penemue.palm.util.unsignedInt
  *
  * This class is **not** thread-safe.
  *
- * @param orderCount how many orders predict in parallel, in
- * [MIN_ORDER_COUNT]`..`[MAX_ORDER_COUNT].
+ * @param orderCount how many orders predict in parallel, at least [MIN_ORDER_COUNT] and bounded from
+ * above with [baseOrder], since the deepest order's context has to fit the history; [MAX_ORDER_COUNT]
+ * does not apply here.
+ * @param baseOrder order of the shallowest predictor, bounded with [orderCount] so the deepest order
+ * still fits the history; every order reading at most two bytes indexes its table directly, so a
+ * deeper base leaves fewer such tables.
+ * @param confidenceSlotBits base-2 logarithm of the number of packed confidence slots per byte.
+ * @param maxConfidence largest confidence value stored in a slot.
+ * @param shallowSlotBits base-2 logarithm of the slot count of the shallowest hashed table; every
+ * deeper order doubles it.
  */
-internal class MultiOrderByteModel(private val orderCount: Int) {
-    private val slotBits = IntArray(orderCount) { slotBitsOf(it) }
-    private val tables = Array(orderCount) { GatedByteTable(slotBits[it]) }
-    private val contextMasks = LongArray(orderCount) { contextMaskOf(it) }
+internal class MultiOrderByteModel(
+    private val orderCount: Int,
+    private val baseOrder: Int,
+    private val confidenceSlotBits: Int,
+    private val maxConfidence: Int,
+    private val shallowSlotBits: Int,
+) {
+    init {
+        require(orderCount >= MIN_ORDER_COUNT) {
+            "orderCount must be at least $MIN_ORDER_COUNT but was $orderCount"
+        }
+        val deepestOrder = baseOrder + orderCount - 1
+        require(deepestOrder <= MAX_CONTEXT_BYTES) {
+            "the deepest of $orderCount orders from order $baseOrder reads $deepestOrder bytes," +
+                " past the $MAX_CONTEXT_BYTES the history holds"
+        }
+    }
+
+    private val directOrders = directOrderCount(baseOrder)
+    private val slotBits = IntArray(orderCount) { slotBitsOf(it, baseOrder, shallowSlotBits) }
+    private val tables = Array(orderCount) {
+        GatedByteTable(slotBits[it], confidenceSlotBits, maxConfidence)
+    }
+    private val contextMasks = LongArray(orderCount) { contextMaskOf(it, baseOrder) }
     private val orderSlots = IntArray(orderCount)
     private val orderPredictions = IntArray(orderCount)
     private val orderConfidences = IntArray(orderCount)
@@ -70,7 +98,7 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
     fun predictions(): IntArray = distinctPredictions
 
     /**
-     * Confidence backing the prediction at [index] of `0 until `[count], in `0..`[MAX_CONFIDENCE].
+     * Confidence backing the prediction at [index] of `0 until `[count], in `0..`[maxConfidence].
      */
     fun confidenceAt(index: Int): Int = distinctConfidences[index]
 
@@ -129,7 +157,6 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
         for (i in 1 until count) {
             var swapped = false
             for (j in 0 until count - i) {
-                // Strict, so a pair of equal confidences is left alone and the deeper order stays ahead.
                 if (distinctConfidences[j] < distinctConfidences[j + 1]) {
                     val prediction = distinctPredictions[j]
                     distinctPredictions[j] = distinctPredictions[j + 1]
@@ -148,30 +175,34 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
 
     private fun slotOf(order: Int): Int {
         val context = history and contextMasks[order]
-        return when (order) {
-            DIRECT_ORDER -> context.toInt()
-            else -> context.fibonacciHash(slotBits[order])
-        }
+        return if (order < directOrders) context.toInt() else context.fibonacciHash(slotBits[order])
     }
 
     private companion object {
 
         /**
-         * Base-2 logarithm of the slot count of the table order [order] (zero-based) owns: the
-         * shallowest order indexes its by the whole context, every deeper one hashes into a table
-         * far smaller than its context and twice the size of the one above it.
+         * Base-2 logarithm of the slot count of the table order [order] (zero-based) owns: an order
+         * reading at most [MAX_DIRECT_CONTEXT_BYTES] bytes indexes its table by the whole context,
+         * every deeper one hashes into a table far smaller than its context and twice the size of the
+         * one above it.
          */
-        fun slotBitsOf(order: Int) = when (order) {
-            DIRECT_ORDER -> DIRECT_ORDER_SLOT_BITS
-            else -> FIRST_HASHED_SLOT_BITS + (order - FIRST_HASHED_ORDER)
+        fun slotBitsOf(order: Int, baseOrder: Int, shallowSlotBits: Int) = when {
+            order < directOrderCount(baseOrder) -> (baseOrder + order) * Byte.SIZE_BITS
+            else -> shallowSlotBits + order - directOrderCount(baseOrder)
         }
 
         /**
-         * Mask keeping the bytes order [order] (zero-based) is keyed by, [BASE_ORDER] more than its
+         * Leading orders whose whole context addresses a slot with no hashing, namely those reading
+         * at most [MAX_DIRECT_CONTEXT_BYTES] bytes.
+         */
+        fun directOrderCount(baseOrder: Int) = (MAX_DIRECT_CONTEXT_BYTES + 1 - baseOrder).coerceAtLeast(0)
+
+        /**
+         * Mask keeping the bytes order [order] (zero-based) is keyed by, [baseOrder] more than its
          * index.
          */
-        fun contextMaskOf(order: Int): Long {
-            val bits = (order + BASE_ORDER) * Byte.SIZE_BITS
+        fun contextMaskOf(order: Int, baseOrder: Int): Long {
+            val bits = (order + baseOrder) * Byte.SIZE_BITS
             // A context exactly as wide as a Long needs no masking.
             return if (bits == Long.SIZE_BITS) -1L else (1L shl bits) - 1
         }
@@ -179,40 +210,56 @@ internal class MultiOrderByteModel(private val orderCount: Int) {
 }
 
 /**
- * One order's prediction table: a byte per slot, plus a confidence occupying [CONFIDENCE_BITS] bits,
- * so [CONFIDENCE_SLOTS_PER_BYTE] slots share one byte of its array.
+ * One order's prediction table: a byte per slot, plus a confidence field, several slots of which share
+ * one byte of a second array.
  *
  * A slot is non-negative and below the slot count, which is what lets the byte holding its confidence
  * be reached by a shift and its position inside that byte by a mask.
  *
- * @param slotBits base-2 logarithm of the slot count, in [CONFIDENCE_SLOT_BITS]`..`[MAX_SLOT_BITS]:
+ * @param slotBits base-2 logarithm of the slot count, in [confidenceSlotBits]`..`[MAX_SLOT_BITS]:
  * below that a slot count leaves the confidence array empty, above it [fibonacciHash] cannot address
  * the table.
+ * @param confidenceSlotBits base-2 logarithm of the confidence slots packed into one byte, which
+ * fixes the width of a single slot's field.
+ * @param maxConfidence value a slot's confidence saturates at; it has to fit the field
+ * [confidenceSlotBits] leaves, or a step would carry into the neighboring slot's.
  */
-private class GatedByteTable(slotBits: Int) {
+private class GatedByteTable(
+    slotBits: Int,
+    private val confidenceSlotBits: Int,
+    private val maxConfidence: Int,
+) {
+    private val confidenceSlotsPerByte = 1 shl confidenceSlotBits
+    private val confidenceBits = Byte.SIZE_BITS / confidenceSlotsPerByte
+    private val confidenceMask = (1 shl confidenceBits) - 1
+
     init {
-        require(slotBits in CONFIDENCE_SLOT_BITS..MAX_SLOT_BITS) {
-            "slotBits must be in $CONFIDENCE_SLOT_BITS..$MAX_SLOT_BITS but was $slotBits"
+        require(slotBits in confidenceSlotBits..MAX_SLOT_BITS) {
+            "slotBits must be in $confidenceSlotBits..$MAX_SLOT_BITS but was $slotBits"
+        }
+        require(maxConfidence <= confidenceMask) {
+            "maxConfidence must be at most $confidenceMask, the widest value a $confidenceBits-bit" +
+                " confidence field holds, but was $maxConfidence"
         }
     }
 
     private val table = ByteArray(1 shl slotBits)
-    private val confidence = ByteArray((1 shl slotBits) / CONFIDENCE_SLOTS_PER_BYTE)
+    private val confidence = ByteArray((1 shl slotBits) / confidenceSlotsPerByte)
 
     fun predictedByte(slot: Int): Int = table[slot].unsignedInt
 
     fun confidenceAt(slot: Int): Int =
-        (confidence[slot ushr CONFIDENCE_SLOT_BITS].unsignedInt ushr shiftOf(slot)) and CONFIDENCE_MASK
+        (confidence[slot ushr confidenceSlotBits].unsignedInt ushr shiftOf(slot)) and confidenceMask
 
     fun learn(slot: Int, byte: Int) {
-        val index = slot ushr CONFIDENCE_SLOT_BITS
+        val index = slot ushr confidenceSlotBits
         val shift = shiftOf(slot)
         val packed = confidence[index].unsignedInt
-        val credit = (packed ushr shift) and CONFIDENCE_MASK
+        val credit = (packed ushr shift) and confidenceMask
         if (table[slot].unsignedInt == byte) {
             // The ceiling keeps the field below its mask, so neither step can carry into a
             // neighboring slot's field and the whole byte can be adjusted at once.
-            if (credit < MAX_CONFIDENCE) {
+            if (credit < maxConfidence) {
                 confidence[index] = (packed + (1 shl shift)).toByte()
             }
         } else if (credit == 0) {
@@ -222,66 +269,22 @@ private class GatedByteTable(slotBits: Int) {
         }
     }
 
-    private fun shiftOf(slot: Int) = (slot and (CONFIDENCE_SLOTS_PER_BYTE - 1)) * CONFIDENCE_BITS
+    private fun shiftOf(slot: Int) = (slot and (confidenceSlotsPerByte - 1)) * confidenceBits
 }
 
 /**
- * How many contradicting bytes a fully confirmed prediction survives, which is also the value a slot's
- * confidence saturates at. Raising it past [CONFIDENCE_MASK] needs a wider field, or a step would
- * carry into the neighboring slot's.
- */
-private const val MAX_CONFIDENCE = 2
-
-/**
- * Values a slot's confidence takes, `0..`[MAX_CONFIDENCE].
- */
-internal const val CONFIDENCE_STATES = MAX_CONFIDENCE + 1
-
-/**
- * Base-2 logarithm of [CONFIDENCE_SLOTS_PER_BYTE], so the byte a slot's confidence shares is reached
- * by a shift. The packing is chosen here and the field width follows from it; past the base-2
- * logarithm of [Byte.SIZE_BITS] a field would have no bits left.
- */
-private const val CONFIDENCE_SLOT_BITS = 2
-
-/**
- * Slots sharing one byte of a table's confidence array.
- */
-private const val CONFIDENCE_SLOTS_PER_BYTE = 1 shl CONFIDENCE_SLOT_BITS
-
-/**
- * Width of one slot's confidence field, which is what [MAX_CONFIDENCE] must fit in.
- */
-private const val CONFIDENCE_BITS = Byte.SIZE_BITS / CONFIDENCE_SLOTS_PER_BYTE
-
-/**
- * Mask of a confidence field already shifted down to the bottom of its byte.
- */
-private const val CONFIDENCE_MASK = (1 shl CONFIDENCE_BITS) - 1
-
-/**
- * Order of the shallowest predictor, so an ensemble of `n` orders spans [BASE_ORDER] through
- * `BASE_ORDER + n - 1`. Shallower orders were measured to cost more in chain steps than their
- * predictions return.
+ * [PalmistFormat.baseOrder] of [PALMIST_CURRENT_FORMAT].
  */
 internal const val BASE_ORDER = 2
 
 /**
- * Zero-based index of the shallowest order, whose table is indexed by its whole context.
+ * Deepest context any order may read, the bytes the `Long` rolling the history holds. An order asked
+ * for more would key on a context wider than the register keeping it.
  */
-private const val DIRECT_ORDER = 0
+internal const val MAX_CONTEXT_BYTES = Long.SIZE_BITS / Byte.SIZE_BITS
 
 /**
- * As wide as the [BASE_ORDER] bytes keying [DIRECT_ORDER], so its table owns a slot per context.
+ * Widest context an order indexes its table by directly, one slot per context; a wider one is hashed.
  */
-private const val DIRECT_ORDER_SLOT_BITS = BASE_ORDER * Byte.SIZE_BITS
+internal const val MAX_DIRECT_CONTEXT_BYTES = 2
 
-/**
- * Zero-based index of the shallowest order whose context is wider than its table.
- */
-private const val FIRST_HASHED_ORDER = DIRECT_ORDER + 1
-
-/**
- * Base-2 logarithm of the slot count of the shallowest hashed table.
- */
-private const val FIRST_HASHED_SLOT_BITS = DIRECT_ORDER_SLOT_BITS + 1

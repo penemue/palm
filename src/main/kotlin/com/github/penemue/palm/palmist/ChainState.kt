@@ -21,13 +21,23 @@ package com.github.penemue.palm.palmist
  *
  * @param orderCount how many orders predict in parallel, which bounds both the prediction count a
  * context records and the number of steps a chain may take.
+ * @param confidenceStates values a prediction's confidence takes, one chain model entry per step and
+ * value.
+ * @param exhaustedHistoryStates states the record of recently exhausted chains takes; it is kept by
+ * shifting, so a count of `2^k` reaches the `k` most recent literals.
+ * @param runBuckets buckets the run of literals whose chain held is folded into. The ladder has six
+ * steps: fewer buckets merge its longest runs into the last bucket, more leave the buckets past the
+ * sixth unused.
  */
-internal class ChainState(orderCount: Int) {
+internal class ChainState(
+    orderCount: Int,
+    private val confidenceStates: Int,
+    private val exhaustedHistoryStates: Int,
+    private val runBuckets: Int,
+) {
 
-    /**
-     * Entries a chain context owns: one per step of the chain, keyed by that step's own confidence.
-     */
-    private val chainSteps = orderCount * CONFIDENCE_STATES
+    // Entries a chain context owns: one per step of the chain, keyed by that step's own confidence.
+    private val chainSteps = orderCount * confidenceStates
 
     /**
      * Byte that precedes the literal being coded, which keys the escape model.
@@ -43,14 +53,14 @@ internal class ChainState(orderCount: Int) {
      * prediction count, the recent exhausted history, the highest confidence at this position and the
      * bucketed run of consecutive hits.
      */
-    val chainModelSize = orderCount * EXHAUSTED_HISTORY_STATES * CONFIDENCE_STATES * RUN_BUCKETS * chainSteps
+    val chainModelSize = orderCount * exhaustedHistoryStates * confidenceStates * runBuckets * chainSteps
 
     /**
      * Chain model context for the coming literal.
      */
     fun chainContext(model: MultiOrderByteModel): Int =
-        ((model.count - 1) * EXHAUSTED_HISTORY_STATES + exhaustedHistory) * CONFIDENCE_STATES * RUN_BUCKETS +
-            model.confidenceAt(0) * RUN_BUCKETS + runBucket()
+        ((model.count - 1) * exhaustedHistoryStates + exhaustedHistory) * confidenceStates * runBuckets +
+            model.confidenceAt(0) * runBuckets + runBucket()
 
     /**
      * Index of the chain model entry a step uses, keyed by the confidence of the prediction that step
@@ -58,31 +68,38 @@ internal class ChainState(orderCount: Int) {
      * together.
      */
     fun chainIndex(context: Int, step: Int, confidence: Int): Int =
-        context * chainSteps + step * CONFIDENCE_STATES + confidence
+        context * chainSteps + step * confidenceStates + confidence
 
     /**
      * Rolls the state past a literal of [value], whose chain ran out of predictions when [exhausted].
      */
     fun advance(value: Int, exhausted: Boolean) {
         run = if (exhausted) 0 else run + 1
-        exhaustedHistory = ((exhaustedHistory shl 1) or (if (exhausted) 1 else 0)) and (EXHAUSTED_HISTORY_STATES - 1)
+        exhaustedHistory = ((exhaustedHistory shl 1) or (if (exhausted) 1 else 0)) and (exhaustedHistoryStates - 1)
         previousLiteral = value
     }
 
-    private fun runBucket(): Int = when {
-        run <= 2 -> run
-        run <= 4 -> 3
-        run <= 8 -> 4
-        else -> 5
+    /**
+     * Bucket of the current run, on a ladder that resolves the first runs one by one and widens as
+     * they grow.
+     */
+    private fun runBucket(): Int {
+        val step = when {
+            run <= 2 -> run
+            run <= 4 -> 3
+            run <= 8 -> 4
+            else -> 5
+        }
+        return minOf(step, runBuckets - 1)
     }
 }
 
 /**
- * States recording whether the chain of each of the two most recent literals ran out of predictions.
+ * Default [PalmistFormat.exhaustedHistoryStates].
  */
-private const val EXHAUSTED_HISTORY_STATES = 4
+internal const val EXHAUSTED_HISTORY_STATES = 4
 
 /**
- * Buckets the current run of literals whose chain did not run out is folded into.
+ * Default [PalmistFormat.runBuckets].
  */
-private const val RUN_BUCKETS = 6
+internal const val RUN_BUCKETS = 6

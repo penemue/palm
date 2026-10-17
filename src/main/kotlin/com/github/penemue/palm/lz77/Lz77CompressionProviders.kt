@@ -41,6 +41,10 @@ class LazyRangeCompressionProvider : CompressionProvider {
     override fun create(): CompressionMethod = Lz77CompressionMethod(true)
 }
 
+/**
+ * LZ77 body coder: the geometry header followed by the range-coded token stream, parsed greedily or
+ * with a one-byte lookahead.
+ */
 private class Lz77CompressionMethod(private val lazy: Boolean) : CompressionMethod() {
     override val family: Int get() = FAMILY_LZ77
 
@@ -52,11 +56,11 @@ private class Lz77CompressionMethod(private val lazy: Boolean) : CompressionMeth
                 "LZ77 compression requires an Lz77Config but got ${config::class.simpleName}",
             )
         }
-        writeGeometry(output, lz77Config)
+        writeGeometry(output, lz77Config, LZ77_CURRENT_FORMAT)
         // The single list of recent distances this operation runs on: the consumer queries it and
         // the parser advances it once per emitted match.
         val repDistances = RepDistances(lz77Config.repDistanceCount)
-        val consumer = RangeLz77TokenConsumer(lz77Config, output, repDistances)
+        val consumer = RangeLz77TokenConsumer(lz77Config, output, repDistances, LZ77_CURRENT_FORMAT)
         if (lazy) {
             source.lz77LazyEncode(consumer, repDistances)
         } else {
@@ -65,25 +69,51 @@ private class Lz77CompressionMethod(private val lazy: Boolean) : CompressionMeth
     }
 
     override fun decompressBody(input: InputStream, output: OutputStream, originalSize: Long) {
-        val config = readGeometry(input)
+        val (config, format) = readGeometry(input)
         // Mirrors the encoder's single list: the reader queries it and the decode loop advances it
         // once per decoded match.
         val repDistances = RepDistances(config.repDistanceCount)
-        val reader = RangeLz77TokenReader(config, input, repDistances)
+        val reader = RangeLz77TokenReader(config, input, repDistances, format)
         decodeTokens(reader, output, config, originalSize, repDistances)
     }
 }
 
-private fun writeGeometry(output: OutputStream, config: Lz77Config) {
+/**
+ * Writes the geometry header: the version prefix, then the fields a decoder needs to size its
+ * window and token fields. The 0.1.0 parameter set is written without the prefix, in the layout a
+ * 0.1.0 decoder reads.
+ */
+private fun writeGeometry(output: OutputStream, config: Lz77Config, format: Lz77Format) {
+    if (format.version != LZ77_LEGACY_VERSION) {
+        output.writeVarInt(GEOMETRY_VERSION_MARKER)
+        output.writeVarInt(format.version)
+    }
     output.writeVarInt(config.windowBits)
     output.writeVarInt(config.lengthBits)
     output.writeVarInt(config.minMatch)
     output.writeVarInt(config.repDistanceCount)
 }
 
-private fun readGeometry(input: InputStream): Lz77Config {
+/**
+ * Reads the geometry header. A leading [GEOMETRY_VERSION_MARKER] is followed by the format version;
+ * any other leading value is the `windowBits` of a stream predating the version prefix.
+ *
+ * @param input source positioned at the geometry header.
+ * @throws IOException on a header no format version, or no geometry, can be built from.
+ */
+private fun readGeometry(input: InputStream): Pair<Lz77Config, Lz77Format> {
     try {
-        val windowBits = input.readVarInt()
+        val first = input.readVarInt()
+        val (format, windowBits) = if (first == GEOMETRY_VERSION_MARKER) {
+            val format = try {
+                lz77Format(input.readVarInt())
+            } catch (exception: IllegalStateException) {
+                throw IOException(exception.message, exception)
+            }
+            format to input.readVarInt()
+        } else {
+            LZ77_LEGACY_FORMAT to first
+        }
         val lengthBits = input.readVarInt()
         val minMatch = input.readVarInt()
         val repDistanceCount = input.readVarInt()
@@ -95,7 +125,7 @@ private fun readGeometry(input: InputStream): Lz77Config {
                 lengthBits = lengthBits,
                 minMatch = minMatch,
                 repDistanceCount = repDistanceCount,
-            )
+            ) to format
         } catch (exception: IllegalArgumentException) {
             throw IOException("Invalid LZ77 geometry", exception)
         }
@@ -104,6 +134,17 @@ private fun readGeometry(input: InputStream): Lz77Config {
     }
 }
 
+/**
+ * Replays the token stream into [output] until [originalSize] bytes are produced, rejecting a
+ * distance or length the geometry cannot honor.
+ *
+ * @param reader source of tokens, sharing [repDistances] with this loop.
+ * @param output destination for the reconstructed bytes.
+ * @param config geometry the decoded fields are validated against.
+ * @param originalSize byte count the stream is known to reproduce.
+ * @param repDistances the operation's list of recent match distances, advanced once per match.
+ * @throws IOException on a token the geometry or the remaining size cannot honor.
+ */
 private fun decodeTokens(
     reader: Lz77TokenReader,
     output: OutputStream,
