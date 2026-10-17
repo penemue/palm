@@ -78,22 +78,15 @@ class RangePalmistTokenConsumer internal constructor(
     override fun literal(value: Int) {
         val count = model.count
         val predictions = model.predictions()
-        var position = -1
-        for (index in 0 until count) {
-            if (predictions[index] == value) {
-                position = index
-                break
-            }
-        }
         val context = state.chainContext(model)
-        var index = 0
-        while (index < count) {
-            val bit = if (index == position) 1 else 0
+        var predicted = false
+        for (index in 0 until count) {
+            predicted = predictions[index] == value
+            val bit = if (predicted) 1 else 0
             encoder.encodeBit(chainModel, state.chainIndex(context, index, model.confidenceAt(index)), bit)
-            if (bit == 1) break
-            index++
+            if (predicted) break
         }
-        if (position < 0) {
+        if (!predicted) {
             encoder.encodeExcludedLiteral(
                 escapeModel,
                 state.previousLiteral,
@@ -103,7 +96,7 @@ class RangePalmistTokenConsumer internal constructor(
                 format.liveCountBuckets,
             )
         }
-        state.advance(value, exhausted = position < 0)
+        state.advance(value, exhausted = !predicted)
         model.learn(value)
     }
 
