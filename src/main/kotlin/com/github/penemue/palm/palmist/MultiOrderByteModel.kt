@@ -130,26 +130,33 @@ internal class MultiOrderByteModel(
      * later tie is resolved the same way.
      */
     private fun collectDistinct() {
-        distinctPredictions[0] = orderPredictions[orderCount - 1]
+        var prevPrediction = orderPredictions[orderCount - 1]
+        distinctPredictions[0] = prevPrediction
         distinctConfidences[0] = orderConfidences[orderCount - 1]
-        count = 1
+        var count = 1
+        var prevIndex = 0
         for (i in orderCount - 2 downTo 0) {
             val prediction = orderPredictions[i]
-            var found = -1
-            for (j in 0 until count) {
-                if (distinctPredictions[j] == prediction) {
-                    found = j
-                    break
+            if (prevPrediction != prediction) {
+                prevIndex = count
+                for (j in 0 until count) {
+                    if (distinctPredictions[j] == prediction) {
+                        prevIndex = j
+                        break
+                    }
+                }
+                if (prevIndex == count) {
+                    distinctPredictions[prevIndex] = prediction
+                    distinctConfidences[prevIndex] = orderConfidences[i]
+                    prevPrediction = prediction
+                    count++
+                    continue
                 }
             }
-            if (found < 0) {
-                distinctPredictions[count] = prediction
-                distinctConfidences[count] = orderConfidences[i]
-                count++
-            } else {
-                distinctConfidences[found] = maxOf(distinctConfidences[found], orderConfidences[i])
-            }
+            distinctConfidences[prevIndex] = maxOf(distinctConfidences[prevIndex], orderConfidences[i])
+            prevPrediction = prediction
         }
+        this.count = count
     }
 
     /**
