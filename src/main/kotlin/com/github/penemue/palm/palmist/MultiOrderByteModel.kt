@@ -118,8 +118,9 @@ internal class MultiOrderByteModel(
         for (i in 0 until orderCount) {
             val slot = slotOf(i)
             orderSlots[i] = slot
-            orderPredictions[i] = tables[i].predictedByte(slot)
-            orderConfidences[i] = tables[i].confidenceAt(slot)
+            val table = tables[i]
+            orderPredictions[i] = table.predictedByte(slot)
+            orderConfidences[i] = table.confidenceAt(slot)
         }
         collectDistinct()
         sortByConfidence()
@@ -166,13 +167,14 @@ internal class MultiOrderByteModel(
         for (i in 1 until count) {
             var swapped = false
             for (j in 0 until count - i) {
-                if (distinctConfidences[j] < distinctConfidences[j + 1]) {
+                val confidence = distinctConfidences[j]
+                val nextConfidence = distinctConfidences[j + 1]
+                if (confidence < nextConfidence) {
+                    distinctConfidences[j] = nextConfidence
+                    distinctConfidences[j + 1] = confidence
                     val prediction = distinctPredictions[j]
                     distinctPredictions[j] = distinctPredictions[j + 1]
                     distinctPredictions[j + 1] = prediction
-                    val confidence = distinctConfidences[j]
-                    distinctConfidences[j] = distinctConfidences[j + 1]
-                    distinctConfidences[j + 1] = confidence
                     swapped = true
                 }
             }
