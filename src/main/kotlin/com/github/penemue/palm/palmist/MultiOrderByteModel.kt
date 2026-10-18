@@ -107,7 +107,7 @@ internal class MultiOrderByteModel(
      * from, and rolls the predictions forward to the next position.
      */
     fun learn(byte: Int) {
-        for (i in 0 until orderCount) {
+        for (i in orderCount - 1 downTo 0) {
             tables[i].learn(orderSlots[i], orderPredictions[i], orderConfidences[i], byte)
         }
         history = (history shl Byte.SIZE_BITS) or byte.toLong()
