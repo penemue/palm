@@ -32,11 +32,13 @@ import java.util.Locale
 import java.util.zip.ZipFile
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.measureTimedValue
 
 /**
  * Shared compression-ratio harness for the complete Silesia Compression Corpus.
  *
- * Only encoded size is measured. The official corpus archive is downloaded into
+ * Encoded size and wall-clock compression time are measured. The official corpus archive is downloaded into
  * `build/corpora/silesia` on the first run, verified by SHA-256 and reused by later runs; corpus
  * data is never added to the repository. Each archive member is loaded and compressed independently,
  * so the whole uncompressed corpus is never held in memory at once. Reported sizes include the
@@ -52,16 +54,21 @@ internal fun runSilesiaBenchmark(providerId: String) {
     val provider: CompressionProvider = CompressionProvider.find(providerId)
     var totalSourceBytes = 0L
     var totalEncodedBytes = 0L
+    var totalEncodeTime = Duration.ZERO
 
     println("method: ${provider.id}")
     println("corpus: Silesia Compression Corpus")
-    println("file\toriginal bytes\tencoded bytes\tpacked bits per byte\tpacked ratio")
+    println("file\toriginal bytes\tencoded bytes\tpacked bits per byte\tpacked ratio\tencode ms")
 
     forEachMember { file, source ->
-        val encoded = encode(source, provider)
+        val (encoded, encodeTime) = measureTimedValue { encode(source, provider) }
+        totalEncodeTime += encodeTime
         val packedBitsPerByte = encoded.bytes * 8.0 / source.size
         val packedRatio = encoded.bytes.toDouble() / source.size
-        println("$file\t${source.size}\t${encoded.bytes}\t${format(packedBitsPerByte)}\t${format(packedRatio)}")
+        println(
+            "$file\t${source.size}\t${encoded.bytes}\t${format(packedBitsPerByte)}\t" +
+                "${format(packedRatio)}\t${encodeTime.inWholeMilliseconds}",
+        )
 
         totalSourceBytes += source.size
         totalEncodedBytes += encoded.bytes
@@ -70,7 +77,8 @@ internal fun runSilesiaBenchmark(providerId: String) {
     println(
         "TOTAL\t$totalSourceBytes\t$totalEncodedBytes\t" +
             "${format(totalEncodedBytes * 8.0 / totalSourceBytes)}\t" +
-            format(totalEncodedBytes.toDouble() / totalSourceBytes),
+            "${format(totalEncodedBytes.toDouble() / totalSourceBytes)}\t" +
+            "${totalEncodeTime.inWholeMilliseconds}",
     )
 
     assertEquals(SILESIA_CORPUS_SIZE, totalSourceBytes)
@@ -173,6 +181,7 @@ private const val ARCHIVE_URL = "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.
 private const val ARCHIVE_SHA256 = "0626e25f45c0ffb5dc801f13b7c82a3b75743ba07e3a71835a41e3d9f63c77af"
 private const val SILESIA_CORPUS_SIZE = 211_938_580L
 private const val COPY_BUFFER_SIZE = 1 shl 20
+
 
 private val SILESIA_FILES = linkedMapOf(
     "dickens" to 10_192_446L,
