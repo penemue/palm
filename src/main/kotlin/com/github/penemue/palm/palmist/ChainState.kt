@@ -59,8 +59,8 @@ internal class ChainState(
      * Chain model context for the coming literal.
      */
     fun chainContext(model: MultiOrderByteModel): Int =
-        ((model.count - 1) * exhaustedHistoryStates + exhaustedHistory) * confidenceStates * runBuckets +
-            model.confidenceAt(0) * runBuckets + runBucket()
+        (((model.count - 1) * exhaustedHistoryStates + exhaustedHistory) * confidenceStates +
+                model.confidenceAt(0)) * runBuckets + runBucket()
 
     /**
      * Index of the chain model entry a step uses, keyed by the confidence of the prediction that step
@@ -74,8 +74,14 @@ internal class ChainState(
      * Rolls the state past a literal of [value], whose chain ran out of predictions when [exhausted].
      */
     fun advance(value: Int, exhausted: Boolean) {
-        run = if (exhausted) 0 else run + 1
-        exhaustedHistory = ((exhaustedHistory shl 1) or (if (exhausted) 1 else 0)) and (exhaustedHistoryStates - 1)
+        var exhaustedHistory = this.exhaustedHistory shl 1
+        if (exhausted) {
+            run = 0
+            ++exhaustedHistory
+        } else {
+            ++run
+        }
+        this.exhaustedHistory = exhaustedHistory and (exhaustedHistoryStates - 1)
         previousLiteral = value
     }
 
