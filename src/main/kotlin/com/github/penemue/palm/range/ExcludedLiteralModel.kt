@@ -84,14 +84,15 @@ fun RangeEncoder.encodeExcludedLiteral(
     liveCountBuckets: Int = LIVE_COUNT_BUCKETS,
 ) {
     val base = contextBase(context, excludedCount, liveCountBuckets)
+    val planes = bitPlanes(excluded, excludedCount)
     var live = (1 shl excludedCount) - 1
     var node = 1
     var i = Byte.SIZE_BITS
     while (--i >= 0) {
         val bit = (value ushr i) and 1
-        encodeBit(model, base + subTreeOf(excluded, live, i, liveCountBuckets) * BYTE_TREE_SIZE + node, bit)
+        encodeBit(model, base + subTreeOf(planes[i], live, liveCountBuckets) * BYTE_TREE_SIZE + node, bit)
         node = (node shl 1) or bit
-        live = narrow(excluded, live, i, bit)
+        live = narrow(planes[i], live, bit)
     }
 }
 
@@ -118,13 +119,14 @@ fun RangeDecoder.decodeExcludedLiteral(
     liveCountBuckets: Int = LIVE_COUNT_BUCKETS,
 ): Int {
     val base = contextBase(context, excludedCount, liveCountBuckets)
+    val planes = bitPlanes(excluded, excludedCount)
     var live = (1 shl excludedCount) - 1
     var node = 1
     var i = Byte.SIZE_BITS
     while (--i >= 0) {
-        val bit = decodeBit(model, base + subTreeOf(excluded, live, i, liveCountBuckets) * BYTE_TREE_SIZE + node)
+        val bit = decodeBit(model, base + subTreeOf(planes[i], live, liveCountBuckets) * BYTE_TREE_SIZE + node)
         node = (node shl 1) or bit
-        live = narrow(excluded, live, i, bit)
+        live = narrow(planes[i], live, bit)
     }
     return node - BYTE_TREE_SIZE
 }
@@ -146,30 +148,36 @@ private fun contextBase(context: Int, excludedCount: Int, liveCountBuckets: Int)
 
 /**
  * Tree a bit is coded through: the plain one when nothing is live, otherwise the matched tree of the
- * bucket the live count falls in, picked by the next bit of the leading live value.
+ * bucket the live count falls in, picked by the next bit of the leading live value, read from the
+ * [plane] of that bit position.
  */
-private fun subTreeOf(excluded: IntArray, live: Int, bitIndex: Int, liveCountBuckets: Int): Int {
+private fun subTreeOf(plane: Int, live: Int, liveCountBuckets: Int): Int {
     if (live == 0) return 0
     val bucket = minOf(live.countOneBits() - 1, liveCountBuckets - 1)
-    val leadingBit = (excluded[live.countTrailingZeroBits()] ushr bitIndex) and 1
+    val leadingBit = (plane ushr live.countTrailingZeroBits()) and 1
     return 1 + bucket * MATCHED_TREES_PER_BUCKET + leadingBit
 }
 
 /**
- * Drops from [live] every value whose bit at [bitIndex] differs from the [bit] just coded, leaving
+ * One mask per bit position of a byte: bit `j` of the mask at position `i` is bit `i` of
+ * `excluded[j]`, for the first [excludedCount] values.
+ */
+private fun bitPlanes(excluded: IntArray, excludedCount: Int): IntArray {
+    val planes = IntArray(Byte.SIZE_BITS)
+    for (index in 0 until excludedCount) {
+        val value = excluded[index]
+        for (i in 0 until Byte.SIZE_BITS) {
+            planes[i] = planes[i] or (((value ushr i) and 1) shl index)
+        }
+    }
+    return planes
+}
+
+/**
+ * Drops from [live] every value whose bit in [plane] differs from the [bit] just coded, leaving
  * those still agreeing with the coded prefix.
  */
-private fun narrow(excluded: IntArray, live: Int, bitIndex: Int, bit: Int): Int {
-    var remaining = live
-    var result = 0
-    while (remaining != 0) {
-        val index = remaining.countTrailingZeroBits()
-        val agrees = ((excluded[index] ushr bitIndex) xor bit xor 1) and 1
-        result = result or (agrees shl index)
-        remaining = remaining and (remaining - 1)
-    }
-    return result
-}
+private fun narrow(plane: Int, live: Int, bit: Int): Int = if (bit == 0) live and plane.inv() else live and plane
 
 /**
  * Default number of buckets the count of values still live at a coded bit is folded into, counting
