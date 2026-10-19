@@ -120,9 +120,14 @@ private const val LEGACY_BASE_ORDER = 1
 private const val LEGACY_EXHAUSTED_HISTORY_STATES = 4
 
 /**
+ * [PalmistFormat.confidenceStates] of the legacy format.
+ */
+private const val LEGACY_CONFIDENCE_STATES = 3
+
+/**
  * Default [PalmistFormat.confidenceStates].
  */
-internal const val DEFAULT_CONFIDENCE_STATES = 3
+internal const val DEFAULT_CONFIDENCE_STATES = 4
 
 /**
  * Default [PalmistFormat.confidenceSlotBits].
@@ -155,6 +160,7 @@ private const val DEFAULT_LIVE_COUNT_BUCKETS = 2
 internal val PALMIST_LEGACY_FORMAT = PalmistFormat(
     PALMIST_LEGACY_VERSION,
     LEGACY_BASE_ORDER,
+    confidenceStates = LEGACY_CONFIDENCE_STATES,
     exhaustedHistoryStates = LEGACY_EXHAUSTED_HISTORY_STATES,
 )
 

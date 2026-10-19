@@ -80,9 +80,9 @@ Best provider per family and corpus:
 | Corpus | Provider | Original | Encoded | Ratio |
 |---|---|---:|---:|---:|
 | [Canterbury](https://corpus.canterbury.ac.nz/) | `lz77-lazy` | 2,810,784 | 514,370 | 0.18 |
-| [Canterbury](https://corpus.canterbury.ac.nz/) | `palmist` | 2,810,784 | 502,917 | 0.18 |
+| [Canterbury](https://corpus.canterbury.ac.nz/) | `palmist` | 2,810,784 | 499,652 | 0.18 |
 | [Silesia](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) | `lz77-lazy` | 211,938,580 | 56,731,610 | 0.27 |
-| [Silesia](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) | `palmist` | 211,938,580 | 58,036,897 | 0.27 |
+| [Silesia](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) | `palmist` | 211,938,580 | 57,714,742 | 0.27 |
 
 Full tables per provider and per file: [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
 

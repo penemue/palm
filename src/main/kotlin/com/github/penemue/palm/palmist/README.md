@@ -57,8 +57,9 @@ those slots predicting their initial byte forever.
 
 Confidence saturates: its ceiling is how many contradicting bytes a fully confirmed prediction
 survives. The ceiling and the packing of the counters are parameters of the format version rather
-than geometry fields, so no payload carries them. The shipped formats saturate at 2 and pack the
-counter two bits per slot, so a confidence array costs a quarter of the table beside it.
+than geometry fields, so no payload carries them. The current format saturates at 3, the legacy one
+at 2; both pack the counter two bits per slot, so a confidence array costs a quarter of the table
+beside it.
 
 The predictions are presented as one list of **distinct** bytes — a value several orders agree on
 appears once, carrying the highest confidence any of them holds for it — ordered by descending
