@@ -20,7 +20,8 @@ leading prediction still consistent with the prefix coded so far.
 ## Install
 
 Any tag, branch, or commit of this repository is consumable as a Maven artifact via
-[JitPack](https://jitpack.io/#penemue/palm); a branch is requested as `main-SNAPSHOT`.
+[JitPack](https://jitpack.io/#penemue/palm): use the tag (`0.2.0`), `<branch>-SNAPSHOT`
+for the latest commit of a branch (e.g. `main-SNAPSHOT`), or a short commit hash.
 
 ```kotlin
 // in Gradle project (Kotlin DSL)
@@ -28,7 +29,7 @@ repositories {
     maven(url = "https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.penemue:palm:0.1.0")
+    implementation("com.github.penemue:palm:0.2.0")
 }
 ```
 ```xml
@@ -42,7 +43,7 @@ dependencies {
 <dependency>
     <groupId>com.github.penemue</groupId>
     <artifactId>palm</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
