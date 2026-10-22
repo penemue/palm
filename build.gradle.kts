@@ -40,8 +40,17 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+// HotSpot treats instance final fields as mutable unless told otherwise, so a JIT-compiled loop
+// re-reads them after every call it cannot inline. Every JVM that tests or measures palm runs with
+// them trusted, to see the code the way a constant-folding JIT would.
+val trustFinalFieldsJvmArgs = listOf(
+    "-XX:+UnlockExperimentalVMOptions",
+    "-XX:+TrustFinalNonStaticFields",
+)
+
 jmh {
     jmhVersion = libs.versions.jmh.core.get()
+    jvmArgsAppend.addAll(trustFinalFieldsJvmArgs)
 }
 
 license {
@@ -147,6 +156,7 @@ fun Test.configureJfrProfile() {
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs(trustFinalFieldsJvmArgs)
     configureJfrProfile()
 }
 
@@ -162,5 +172,6 @@ tasks.register<Test>("benchmark") {
     testLogging.showStandardStreams = true
     // A benchmark reports through stdout, which an up-to-date task would never produce.
     outputs.upToDateWhen { false }
+    jvmArgs(trustFinalFieldsJvmArgs)
     configureJfrProfile()
 }

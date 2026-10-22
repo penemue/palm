@@ -35,9 +35,11 @@ import java.io.InputStream
  */
 class RangeDecoder @JvmOverloads constructor(
     private val input: InputStream,
-    private val format: RangeFormat = DEFAULT_RANGE_FORMAT,
+    format: RangeFormat = DEFAULT_RANGE_FORMAT,
 ) {
 
+    private val probabilityBits = format.probabilityBits
+    private val rangeTop = format.rangeTop
     private var range = 0xFFFFFFFFL
     private var code = 0L
 
@@ -55,7 +57,9 @@ class RangeDecoder @JvmOverloads constructor(
      * @return the decoded bit, 0 or 1.
      */
     fun decodeBit(model: BitModel, index: Int): Int {
-        val bound = (range ushr format.probabilityBits) * model.probabilityOfZero(index)
+        var range = this.range
+        var code = this.code
+        val bound = (range ushr probabilityBits) * model.probabilityOfZero(index)
         val bit: Int
         // The coder invariant keeps both code and bound in 0 until 2^32, so this compares them
         // as the unsigned 32-bit quantities they are.
@@ -67,11 +71,13 @@ class RangeDecoder @JvmOverloads constructor(
             range -= bound
             bit = 1
         }
-        model.adapt(index, bit)
-        while (range < format.rangeTop) {
+        while (range < rangeTop) {
             range = range shl 8
             code = ((code shl 8) or readByte().toLong()) and 0xFFFFFFFFL
         }
+        this.range = range
+        this.code = code
+        model.adapt(index, bit)
         return bit
     }
 
@@ -92,7 +98,7 @@ class RangeDecoder @JvmOverloads constructor(
             val bit = 1 - (difference ushr 31).toInt()
             if (bit == 1) code = difference
             result = (result shl 1) or bit
-            if (range < format.rangeTop) {
+            if (range < rangeTop) {
                 range = range shl 8
                 code = ((code shl 8) or readByte().toLong()) and 0xFFFFFFFFL
             }

@@ -38,9 +38,11 @@ import java.io.OutputStream
  */
 class RangeEncoder @JvmOverloads constructor(
     private val out: OutputStream,
-    private val format: RangeFormat = DEFAULT_RANGE_FORMAT,
+    format: RangeFormat = DEFAULT_RANGE_FORMAT,
 ) {
 
+    private val probabilityBits = format.probabilityBits
+    private val rangeTop = format.rangeTop
     private var low = 0L
     private var range = 0xFFFFFFFFL
     private var cache = 0
@@ -56,18 +58,20 @@ class RangeEncoder @JvmOverloads constructor(
      */
     fun encodeBit(model: BitModel, index: Int, bit: Int) {
         // Split the current range in proportion to the zero-bit probability.
-        val bound = (range ushr format.probabilityBits) * model.probabilityOfZero(index)
+        var range = this.range
+        val bound = (range ushr probabilityBits) * model.probabilityOfZero(index)
         if (bit == 0) {
             range = bound
         } else {
             low += bound
             range -= bound
         }
-        model.adapt(index, bit)
-        while (range < format.rangeTop) {
+        while (range < rangeTop) {
             range = range shl 8
             shiftLow()
         }
+        this.range = range
+        model.adapt(index, bit)
     }
 
     /**
@@ -83,7 +87,7 @@ class RangeEncoder @JvmOverloads constructor(
         while (--i >= 0) {
             range = range ushr 1
             if (((value ushr i) and 1) != 0) low += range
-            if (range < format.rangeTop) {
+            if (range < rangeTop) {
                 range = range shl 8
                 shiftLow()
             }
